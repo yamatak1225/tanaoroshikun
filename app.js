@@ -1079,8 +1079,8 @@ async function processScan(rawValue) {
 
 function getPrintRowValues(row, index) {
   return [
-    String(index + 1), row["品名"], row["規格"] || "―", row["商品コード"] || "―", row["製品番号"] || "―", row["ラベルキー"],
-    formatMasterDate(row["払出予定伝票日付"]), `${row["施設名称"]} / ${row["部署名称"]}`,
+    String(index + 1), `${row["施設名称"]} / ${row["部署名称"]}`, row["商品コード"] || "―", row["品名"], row["規格"] || "―",
+    row["製品番号"] || "―", row["ラベルキー"], formatMasterDate(row["払出予定伝票日付"]),
     state.reissueLabelKeys.has(row["ラベルキー"]) ? "ラベル再発行" : ""
   ];
 }

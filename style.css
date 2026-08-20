@@ -302,6 +302,17 @@ body.has-modal { overflow: hidden; }
   .print-stamp-box { display: grid; height: 14mm; place-items: center; }
   .print-stamp-box span { color: #777; font-size: 7pt; }
   .print-sheet table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 6.8pt; }
+  .print-sheet thead { display: table-header-group; }
+  .print-sheet tbody { display: table-row-group; }
+  .print-sheet th:nth-child(1) { width: 4%; }
+  .print-sheet th:nth-child(2) { width: 18%; }
+  .print-sheet th:nth-child(3) { width: 11%; }
+  .print-sheet th:nth-child(4) { width: 18%; }
+  .print-sheet th:nth-child(5) { width: 13%; }
+  .print-sheet th:nth-child(6) { width: 10%; }
+  .print-sheet th:nth-child(7) { width: 10%; }
+  .print-sheet th:nth-child(8) { width: 9%; }
+  .print-sheet th:nth-child(9) { width: 7%; }
   .print-sheet th, .print-sheet td { padding: 1.6mm; border: 1px solid #555; overflow-wrap: anywhere; text-align: left; vertical-align: top; }
   .print-sheet th { background: #eee; }
   .print-sheet tr { break-inside: avoid; }
