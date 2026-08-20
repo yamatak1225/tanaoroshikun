@@ -285,35 +285,44 @@ body.has-modal { overflow: hidden; }
   .section-actions .reissue-extract-button { flex-basis: 100%; }
 }
 
+.print-sheet { color: #000; background: #fff; font-family: "Yu Gothic", "Meiryo", sans-serif; }
+.print-page { width: 100%; }
+.print-header { display: grid; grid-template-columns: minmax(0, 1fr) 22mm; gap: 5mm; align-items: start; margin-bottom: 5mm; }
+.print-sheet h1 { margin: 0 0 5mm; font-size: 17pt; }
+.print-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2mm 5mm; margin: 0; font-size: 9pt; }
+.print-summary div { display: grid; grid-template-columns: 6em minmax(0, 1fr); }
+.print-summary .print-counts { grid-column: 1 / -1; }
+.print-summary dt { font-weight: 700; }
+.print-summary dd { margin: 0; }
+.print-approval { width: 22mm; border: 1px solid #333; break-inside: avoid; }
+.print-approval h2 { margin: 0; padding: 1mm; border-bottom: 1px solid #333; font-size: 7pt; text-align: center; }
+.print-stamp-box { display: grid; height: 14mm; place-items: center; }
+.print-stamp-box span { color: #777; font-size: 7pt; }
+.print-sheet table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 6.8pt; }
+.print-sheet thead { display: table-header-group; }
+.print-sheet tbody { display: table-row-group; }
+.print-sheet th:nth-child(1) { width: 4%; }
+.print-sheet th:nth-child(2) { width: 18%; }
+.print-sheet th:nth-child(3) { width: 11%; }
+.print-sheet th:nth-child(4) { width: 18%; }
+.print-sheet th:nth-child(5) { width: 13%; }
+.print-sheet th:nth-child(6) { width: 10%; }
+.print-sheet th:nth-child(7) { width: 10%; }
+.print-sheet th:nth-child(8) { width: 9%; }
+.print-sheet th:nth-child(9) { width: 7%; }
+.print-sheet th, .print-sheet td { padding: 1.6mm; border: 1px solid #555; overflow-wrap: anywhere; text-align: left; vertical-align: top; }
+.print-sheet th { background: #eee; }
+.print-sheet tr { break-inside: avoid; }
+.print-measure { position: absolute; top: 0; left: -10000px; display: block !important; width: 277mm; visibility: hidden; pointer-events: none; }
+.print-page-height-probe { position: absolute; width: 1px; height: 190mm; }
+.print-page-safety-probe { position: absolute; width: 1px; height: 3mm; }
+
 @media print {
   @page { size: A4 landscape; margin: 10mm; }
   html, body { color: #000; background: #fff; font-family: "Yu Gothic", "Meiryo", sans-serif; }
   body > :not(.print-sheet) { display: none !important; }
   .print-sheet { display: block !important; }
-  .print-header { display: grid; grid-template-columns: minmax(0, 1fr) 22mm; gap: 5mm; align-items: start; margin-bottom: 5mm; }
-  .print-sheet h1 { margin: 0 0 5mm; font-size: 17pt; }
-  .print-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2mm 5mm; margin: 0; font-size: 9pt; }
-  .print-summary div { display: grid; grid-template-columns: 6em minmax(0, 1fr); }
-  .print-summary .print-counts { grid-column: 1 / -1; }
-  .print-summary dt { font-weight: 700; }
-  .print-summary dd { margin: 0; }
-  .print-approval { width: 22mm; border: 1px solid #333; break-inside: avoid; }
-  .print-approval h2 { margin: 0; padding: 1mm; border-bottom: 1px solid #333; font-size: 7pt; text-align: center; }
-  .print-stamp-box { display: grid; height: 14mm; place-items: center; }
-  .print-stamp-box span { color: #777; font-size: 7pt; }
-  .print-sheet table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 6.8pt; }
-  .print-sheet thead { display: table-header-group; }
-  .print-sheet tbody { display: table-row-group; }
-  .print-sheet th:nth-child(1) { width: 4%; }
-  .print-sheet th:nth-child(2) { width: 18%; }
-  .print-sheet th:nth-child(3) { width: 11%; }
-  .print-sheet th:nth-child(4) { width: 18%; }
-  .print-sheet th:nth-child(5) { width: 13%; }
-  .print-sheet th:nth-child(6) { width: 10%; }
-  .print-sheet th:nth-child(7) { width: 10%; }
-  .print-sheet th:nth-child(8) { width: 9%; }
-  .print-sheet th:nth-child(9) { width: 7%; }
-  .print-sheet th, .print-sheet td { padding: 1.6mm; border: 1px solid #555; overflow-wrap: anywhere; text-align: left; vertical-align: top; }
-  .print-sheet th { background: #eee; }
-  .print-sheet tr { break-inside: avoid; }
+  .print-measure { display: none !important; }
+  .print-page { break-after: page; page-break-after: always; }
+  .print-page:last-child { break-after: auto; page-break-after: auto; }
 }
