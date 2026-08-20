@@ -3,7 +3,7 @@
 const STORAGE_KEYS = { master: "inventory-kun-master-v2", state: "inventory-kun-state-v2" };
 const HISTORY_DB_NAME = "inventory-kun-history-v1";
 const HISTORY_STORE_NAME = "scanHistory";
-const REQUIRED_HEADERS = ["施設コード", "施設名称", "部署コード", "部署名称", "品名", "製品番号", "ラベルキー", "払出予定伝票日付", "エラーメッセージ"];
+const REQUIRED_HEADERS = ["施設コード", "施設名称", "部署コード", "部署名称", "品名", "規格", "製品番号", "ラベルキー", "払出予定伝票日付", "エラーメッセージ"];
 const DEPARTMENT_SEPARATOR = "\u001f";
 
 const state = {
@@ -11,6 +11,8 @@ const state = {
   masterInfo: null,
   labelIndex: new Map(),
   readLabelKeys: new Set(),
+  confirmationMethods: new Map(),
+  reissueLabelKeys: new Set(),
   targetEndDate: "",
   currentDepartment: null,
   history: [],
@@ -21,6 +23,7 @@ const state = {
 let elements = {};
 let successSound = null;
 let alertSound = null;
+let completionSound = null;
 let historyDbPromise = null;
 
 function normalizeHeader(value) { return String(value ?? "").replace(/^\uFEFF/, "").trim(); }
@@ -220,6 +223,11 @@ function getUnreadLabels() {
   return getCurrentTargetLabels().filter((row) => !state.readLabelKeys.has(row["ラベルキー"]));
 }
 
+function getOutputTargetLabels() {
+  if (!validateTargetEndDate().ok) return [];
+  return state.masterRows.filter((row) => isRowOnOrBeforeEndDate(row));
+}
+
 function getTargetCounts() {
   const targets = getCurrentTargetLabels();
   const read = targets.filter((row) => state.readLabelKeys.has(row["ラベルキー"])).length;
@@ -239,7 +247,7 @@ function validateSpdLabel(rawValue) {
   if (!parsed.ok) return parsed;
   const found = findLabel(parsed.labelKey);
   if (found.code === "NOT_FOUND") {
-    return { ok: false, code: "NOT_FOUND", title: "マスター未登録", message: "このSPDラベルはラベルマスタに存在しません。", labelKey: parsed.labelKey };
+    return { ok: false, code: "NOT_FOUND", title: "マスター未登録", message: "このSPDラベルは在庫差異.tsvに存在しません。", labelKey: parsed.labelKey };
   }
   if (found.code === "AMBIGUOUS_LABEL") {
     return { ok: false, code: "AMBIGUOUS_LABEL", title: "ラベルキー重複", message: "同じラベルキーがマスターに複数あります。マスターを確認してください。", labelKey: parsed.labelKey };
@@ -273,8 +281,33 @@ function acceptSpdLabel(rawValue) {
   const result = validateSpdLabel(rawValue);
   if (!result.ok) return result;
   state.readLabelKeys.add(result.labelKey);
+  state.confirmationMethods.set(result.labelKey, "バーコード");
   saveState();
-  return { ...result, counts: getTargetCounts() };
+  return { ...result, confirmationMethod: "バーコード", counts: getTargetCounts() };
+}
+
+function confirmUnreadLabel(labelKey) {
+  const normalizedKey = normalizeLabelKey(labelKey);
+  const row = getCurrentTargetLabels().find((candidate) => candidate["ラベルキー"] === normalizedKey);
+  if (!row) return { ok: false, code: "NOT_TARGET", title: "確認対象外", message: "現在選択中の部署の未読取ラベルではありません。", labelKey: normalizedKey };
+  if (state.readLabelKeys.has(normalizedKey)) return { ok: false, code: "DUPLICATE", title: "確認済です", message: "このラベルはすでに読取済です。", labelKey: normalizedKey, row };
+  state.readLabelKeys.add(normalizedKey);
+  state.confirmationMethods.set(normalizedKey, "手動確認");
+  saveState();
+  return { ok: true, code: "MANUAL_OK", title: "確認完了", message: "現物確認により読取済にしました。", labelKey: normalizedKey, row, confirmationMethod: "手動確認", counts: getTargetCounts() };
+}
+
+function toggleReissueLabel(labelKey) {
+  const normalizedKey = normalizeLabelKey(labelKey);
+  if (!getCurrentTargetLabels().some((row) => row["ラベルキー"] === normalizedKey)) return false;
+  if (state.reissueLabelKeys.has(normalizedKey)) state.reissueLabelKeys.delete(normalizedKey);
+  else state.reissueLabelKeys.add(normalizedKey);
+  saveState();
+  return state.reissueLabelKeys.has(normalizedKey);
+}
+
+function isCompletionTransition(beforeCounts, afterCounts) {
+  return Boolean(beforeCounts?.unread > 0 && afterCounts?.target > 0 && afterCounts.unread === 0);
 }
 
 function todayInputValue() {
@@ -310,6 +343,7 @@ function createHistoryRecord(scanResult, rawValue, now = new Date()) {
     labelKey: scanResult.labelKey || "",
     productNumber: row["製品番号"] || "",
     productName: row["品名"] || "",
+    confirmationMethod: scanResult.confirmationMethod || "",
     spdRaw: normalizeValue(rawValue),
     result: scanResult.ok ? "OK" : "NG",
     detail: scanResult.title || scanResult.code || (scanResult.ok ? "読取完了" : "読取エラー")
@@ -337,7 +371,6 @@ function openHistoryDb(indexedDbRef = globalThis.indexedDB) {
 
 async function saveScanHistory(record) {
   state.history.push(record);
-  renderHistoryIfReady();
   try {
     const db = await openHistoryDb();
     if (db) {
@@ -348,7 +381,7 @@ async function saveScanHistory(record) {
       });
     }
   } catch (error) {
-    console.error("読取履歴を保存できません。", error);
+    console.error("棚卸操作記録を保存できません。", error);
   }
   return record;
 }
@@ -364,9 +397,8 @@ async function loadScanHistory() {
       });
     }
   } catch (error) {
-    console.error("読取履歴を読み込めません。", error);
+    console.error("棚卸操作記録を読み込めません。", error);
   }
-  renderHistoryIfReady();
   return state.history;
 }
 
@@ -380,20 +412,42 @@ async function clearScanHistory() {
     });
   }
   state.history = [];
-  renderHistoryIfReady();
 }
 
-function filterHistory(records, filters = {}) {
-  const start = filters.startDate ? `${filters.startDate}T00:00:00` : "";
-  const end = filters.endDate ? `${filters.endDate}T23:59:59.999` : "";
+function createOutputRecord(row) {
+  const labelKey = row["ラベルキー"];
+  const read = state.readLabelKeys.has(labelKey);
+  return {
+    productCode: row["商品コード"] || "",
+    manufacturerName: row["メーカー名"] || "",
+    productName: row["品名"] || "",
+    specification: row["規格"] || "",
+    productNumber: row["製品番号"] || "",
+    labelKey,
+    labelDate: formatMasterDate(row["払出予定伝票日付"]),
+    expirationDate: row["有効期限"] || "",
+    lotNumber: row["ロット番号"] || "",
+    facilityCode: row["施設コード"] || "",
+    facilityName: row["施設名称"] || "",
+    departmentCode: row["部署コード"] || "",
+    departmentName: row["部署名称"] || "",
+    readStatus: read ? "読取済" : "未読取",
+    confirmationMethod: read ? state.confirmationMethods.get(labelKey) || "" : "",
+    reissueStatus: state.reissueLabelKeys.has(labelKey) ? "再発行" : ""
+  };
+}
+
+function getOutputRecords() {
+  return getOutputTargetLabels().map(createOutputRecord);
+}
+
+function filterOutputRecords(records, filters = {}) {
   const search = normalizeValue(filters.search).toLowerCase();
   return records.filter((record) => {
-    const timestamp = record.completedAt || record.eventAt || "";
-    if ((start && timestamp < start) || (end && timestamp > end)) return false;
     if (filters.facility && record.facilityName !== filters.facility) return false;
     if (filters.department && record.departmentName !== filters.department) return false;
-    if (filters.result && record.result !== filters.result) return false;
-    return !search || [record.productNumber, record.productName, record.labelKey, record.spdRaw].join(" ").toLowerCase().includes(search);
+    if (filters.readStatus && record.readStatus !== filters.readStatus) return false;
+    return !search || [record.productCode, record.manufacturerName, record.productNumber, record.productName, record.specification, record.labelKey].join(" ").toLowerCase().includes(search);
   });
 }
 
@@ -402,18 +456,18 @@ function csvEscape(value) {
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
-function buildHistoryCsv(records) {
+function buildOutputCsv(records) {
   const columns = [
-    ["読取日時", "eventAt"], ["施設コード", "facilityCode"], ["施設名称", "facilityName"],
-    ["部署コード", "departmentCode"], ["部署名称", "departmentName"], ["払出予定伝票日付", "plannedDate"],
-    ["ラベルキー", "labelKey"], ["製品番号", "productNumber"], ["品名", "productName"],
-    ["SPD QR", "spdRaw"], ["判定結果", "result"], ["判定詳細", "detail"]
+    ["商品コード", "productCode"], ["メーカー名", "manufacturerName"], ["商品名", "productName"], ["規格", "specification"],
+    ["製品番号", "productNumber"], ["ラベルキー", "labelKey"], ["ラベル日付", "labelDate"], ["有効期限", "expirationDate"],
+    ["ロット番号", "lotNumber"], ["施設コード", "facilityCode"], ["施設名", "facilityName"], ["部署コード", "departmentCode"],
+    ["部署名", "departmentName"], ["読取済区分", "readStatus"], ["確認方法", "confirmationMethod"], ["ラベル再発行区分", "reissueStatus"]
   ];
   return [columns.map(([label]) => csvEscape(label)).join(","), ...records.map((record) => columns.map(([, key]) => csvEscape(record[key])).join(","))].join("\r\n");
 }
 
-function createHistoryCsvFile(records) {
-  return new File(["\uFEFF", buildHistoryCsv(records)], `棚卸くん_読取履歴_${todayInputValue().replaceAll("-", "")}.csv`, { type: "text/csv;charset=utf-8" });
+function createOutputCsvFile(records) {
+  return new File(["\uFEFF", buildOutputCsv(records)], `棚卸くん_棚卸データ_${todayInputValue().replaceAll("-", "")}.csv`, { type: "text/csv;charset=utf-8" });
 }
 
 function downloadFile(file, documentRef = document) {
@@ -425,13 +479,13 @@ function downloadFile(file, documentRef = document) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-async function shareHistoryCsv(records, env = {}) {
-  if (!records.length) throw new Error("出力対象の履歴がありません。");
+async function shareOutputCsv(records, env = {}) {
+  if (!records.length) throw new Error("出力対象の棚卸データがありません。");
   const navigatorRef = env.navigatorRef || navigator;
   const documentRef = env.documentRef || document;
-  const file = createHistoryCsvFile(records);
+  const file = createOutputCsvFile(records);
   if (navigatorRef.canShare?.({ files: [file] }) && navigatorRef.share) {
-    await navigatorRef.share({ title: "棚卸くん 読取履歴", text: "棚卸くんの読取履歴CSVです。", files: [file] });
+    await navigatorRef.share({ title: "棚卸くん 棚卸データ", text: "棚卸くんの対象ラベル全件CSVです。", files: [file] });
     return "shared";
   }
   downloadFile(file, documentRef);
@@ -461,6 +515,8 @@ function saveState() {
     localStorage.setItem(STORAGE_KEYS.state, JSON.stringify({
       masterFingerprint: state.masterInfo?.fingerprint || null,
       readLabelKeys: [...state.readLabelKeys],
+      confirmationMethods: [...state.confirmationMethods],
+      reissueLabelKeys: [...state.reissueLabelKeys],
       targetEndDate: state.targetEndDate,
       currentDepartment: state.currentDepartment
     }));
@@ -493,6 +549,9 @@ function restoreState() {
     if (saved?.targetEndDate && parseDateInput(saved.targetEndDate)) state.targetEndDate = saved.targetEndDate;
     if (saved && saved.masterFingerprint === state.masterInfo?.fingerprint) {
       state.readLabelKeys = new Set(Array.isArray(saved.readLabelKeys) ? saved.readLabelKeys.map(normalizeLabelKey) : []);
+      state.confirmationMethods = new Map(Array.isArray(saved.confirmationMethods) ? saved.confirmationMethods.map(([key, method]) => [normalizeLabelKey(key), method]) : []);
+      state.readLabelKeys.forEach((key) => { if (!state.confirmationMethods.has(key)) state.confirmationMethods.set(key, "バーコード"); });
+      state.reissueLabelKeys = new Set(Array.isArray(saved.reissueLabelKeys) ? saved.reissueLabelKeys.map(normalizeLabelKey) : []);
       state.currentDepartment = saved.currentDepartment || null;
     }
   } catch (error) {
@@ -522,6 +581,8 @@ function applyMasterData(rows, sourceInfo, now = new Date()) {
   state.targetEndDate = todayInputValue();
   state.currentDepartment = null;
   state.readLabelKeys = new Set();
+  state.confirmationMethods = new Map();
+  state.reissueLabelKeys = new Set();
   rebuildIndexes();
   const masterSaved = saveMaster();
   saveState();
@@ -545,14 +606,16 @@ function initAudio() {
   if (typeof Audio === "undefined") return;
   if (!successSound) { successSound = new Audio("ok.wav"); successSound.preload = "auto"; }
   if (!alertSound) { alertSound = new Audio("alert.wav"); alertSound.preload = "auto"; }
+  if (!completionSound) { completionSound = new Audio("complete.wav"); completionSound.preload = "auto"; }
   successSound.load();
   alertSound.load();
+  completionSound.load();
 }
 
 async function unlockAudio() {
   initAudio();
-  const sounds = [successSound, alertSound].filter(Boolean);
-  if (sounds.length !== 2) {
+  const sounds = [successSound, alertSound, completionSound].filter(Boolean);
+  if (sounds.length !== 3) {
     elements.audioStatus.textContent = "有効化できません";
     return false;
   }
@@ -572,7 +635,7 @@ async function unlockAudio() {
 
 function playSound(sound) {
   if (!sound) initAudio();
-  const target = sound === "success" ? successSound : alertSound;
+  const target = sound === "success" ? successSound : sound === "completion" ? completionSound : alertSound;
   if (!target) return;
   target.currentTime = 0;
   target.play().catch(() => {
@@ -582,6 +645,7 @@ function playSound(sound) {
 
 function playSuccessSound() { playSound("success"); }
 function playAlertSound() { playSound("alert"); }
+function playCompletionSound() { playSound("completion"); }
 
 function cacheElements() {
   const ids = [
@@ -589,8 +653,8 @@ function cacheElements() {
     "masterLoaded", "masterFileName", "masterFacilityName", "masterSource", "masterImportedAt", "masterRowCount", "masterErrorExcludedCount", "masterMaxDate",
     "targetEndDate", "periodError", "departmentSelect", "currentFacility", "currentDepartment", "currentDepartmentCode", "targetCount", "readCount", "unreadCount",
     "resultPanel", "modeStatus", "resultTitle", "resultMessage", "resultDetails", "scannerBufferStatus", "manualScanInput", "manualScanButton",
-    "refreshUnreadButton", "printPreviewButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadList",
-    "historyStartDate", "historyEndDate", "historyFacility", "historyDepartment", "historyResult", "historySearch", "historyCount", "historyList", "shareHistoryButton", "clearHistoryButton", "historyMessage",
+    "refreshUnreadButton", "printPreviewButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadActionMessage", "unreadList",
+    "outputEndDate", "outputFacility", "outputDepartment", "outputReadStatus", "outputSearch", "outputCount", "outputList", "exportDataButton", "outputMessage",
     "printSheet", "printDateTime", "printEndDate", "printFacility", "printDepartment", "printCounts", "printTableBody"
   ];
   elements = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
@@ -699,18 +763,41 @@ function renderScanner() {
 
 function createUnreadItem(row, index) {
   const article = document.createElement("article");
-  article.className = "unread-item";
+  const labelKey = row["ラベルキー"];
+  const reissue = state.reissueLabelKeys.has(labelKey);
+  article.className = `unread-item${reissue ? " unread-item--reissue" : ""}`;
   const heading = document.createElement("h3");
   heading.textContent = `${index + 1}. ${row["品名"]}`;
+  const specification = document.createElement("p");
+  specification.className = "item-specification";
+  specification.textContent = `規格：${row["規格"] || "―"}`;
   const product = document.createElement("p");
   product.className = "item-product";
   product.textContent = `製品番号：${row["製品番号"] || "―"}`;
   const key = document.createElement("p");
   key.className = "item-key";
-  key.textContent = `ラベルキー：${row["ラベルキー"]}`;
+  key.textContent = `ラベルキー：${labelKey}`;
+  const labelDate = document.createElement("p");
+  labelDate.textContent = `ラベル日付：${formatMasterDate(row["払出予定伝票日付"])}`;
   const department = document.createElement("p");
   department.textContent = `${row["施設名称"]} ／ ${row["部署名称"]}`;
-  article.append(heading, product, key, department);
+  const actions = document.createElement("div");
+  actions.className = "unread-actions";
+  const confirmButton = document.createElement("button");
+  confirmButton.type = "button";
+  confirmButton.className = "button unread-confirm-button";
+  confirmButton.dataset.action = "confirm";
+  confirmButton.dataset.labelKey = labelKey;
+  confirmButton.textContent = "確認済";
+  const reissueButton = document.createElement("button");
+  reissueButton.type = "button";
+  reissueButton.className = `button unread-reissue-button${reissue ? " is-active" : ""}`;
+  reissueButton.dataset.action = "reissue";
+  reissueButton.dataset.labelKey = labelKey;
+  reissueButton.setAttribute("aria-pressed", String(reissue));
+  reissueButton.textContent = reissue ? "再発行対象" : "再発行";
+  actions.append(confirmButton, reissueButton);
+  article.append(heading, specification, product, key, labelDate, department, actions);
   return article;
 }
 
@@ -742,61 +829,57 @@ function createEmptyState(message) {
   return empty;
 }
 
-function getHistoryFiltersFromUi() {
+function getOutputFiltersFromUi() {
   return {
-    startDate: elements.historyStartDate.value,
-    endDate: elements.historyEndDate.value,
-    facility: elements.historyFacility.value,
-    department: elements.historyDepartment.value,
-    result: elements.historyResult.value,
-    search: elements.historySearch.value
+    facility: elements.outputFacility.value,
+    department: elements.outputDepartment.value,
+    readStatus: elements.outputReadStatus.value,
+    search: elements.outputSearch.value
   };
 }
 
-function updateHistoryFilterOptions() {
+function updateOutputFilterOptions(records) {
   const setOptions = (select, values, label) => {
     const current = select.value;
     select.replaceChildren(new Option(label, ""), ...[...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map((value) => new Option(value, value)));
     select.value = current;
   };
-  setOptions(elements.historyFacility, state.history.map((record) => record.facilityName), "すべての施設");
-  setOptions(elements.historyDepartment, state.history.map((record) => record.departmentName), "すべての部署");
+  setOptions(elements.outputFacility, records.map((record) => record.facilityName), "すべての施設");
+  setOptions(elements.outputDepartment, records.map((record) => record.departmentName), "すべての部署");
 }
 
-function renderHistory() {
-  if (!elements.historyList) return;
-  updateHistoryFilterOptions();
-  const records = filterHistory(state.history, getHistoryFiltersFromUi()).sort((left, right) => (right.eventAt || "").localeCompare(left.eventAt || ""));
-  elements.historyCount.textContent = `${records.length}件`;
-  elements.historyList.replaceChildren();
+function renderOutputData() {
+  if (!elements.outputList) return;
+  elements.outputEndDate.textContent = formatDateForDisplay(state.targetEndDate);
+  const allRecords = getOutputRecords();
+  updateOutputFilterOptions(allRecords);
+  const records = filterOutputRecords(allRecords, getOutputFiltersFromUi());
+  elements.outputCount.textContent = `${records.length}件`;
+  elements.outputList.replaceChildren();
   if (!records.length) {
-    elements.historyList.append(createEmptyState("条件に該当する履歴はありません。"));
+    elements.outputList.append(createEmptyState("条件に該当する棚卸データはありません。"));
     return;
   }
-  records.slice(0, 500).forEach((record) => {
+  records.forEach((record) => {
     const article = document.createElement("article");
-    article.className = `history-item history-item--${record.result.toLowerCase()}`;
+    article.className = `history-item history-item--${record.readStatus === "読取済" ? "ok" : "unread"}`;
     const heading = document.createElement("div");
     heading.className = "history-item-heading";
     const result = document.createElement("strong");
-    result.textContent = record.result;
-    const time = document.createElement("time");
-    time.textContent = formatLocalDateTime(record.eventAt);
-    heading.append(result, time);
+    result.textContent = record.readStatus;
+    const method = document.createElement("span");
+    method.textContent = [record.confirmationMethod, record.reissueStatus].filter(Boolean).join(" ／ ") || "未確認";
+    heading.append(result, method);
     const title = document.createElement("h3");
-    title.textContent = `${record.productNumber || "―"}　${record.productName || record.detail || ""}`;
+    title.textContent = `${record.productName || "―"}　${record.specification || ""}`;
     const place = document.createElement("p");
     place.textContent = `${record.facilityName || "―"} ／ ${record.departmentName || "―"}`;
     const detail = document.createElement("p");
     detail.className = "item-key";
-    detail.textContent = `ラベル：${record.labelKey || "―"}　判定：${record.detail || "―"}`;
+    detail.textContent = `製品番号：${record.productNumber || "―"}　ラベル：${record.labelKey || "―"}　日付：${record.labelDate}`;
     article.append(heading, title, place, detail);
-    elements.historyList.append(article);
+    elements.outputList.append(article);
   });
-}
-
-function renderHistoryIfReady() {
-  if (elements.historyList) renderHistory();
 }
 
 function renderAll() {
@@ -809,14 +892,14 @@ function renderAll() {
   renderCounts();
   renderScanner();
   renderUnreadList();
-  renderHistory();
+  renderOutputData();
 }
 
 function switchSection(sectionId) {
   document.querySelectorAll(".screen").forEach((section) => section.classList.toggle("is-active", section.id === sectionId));
   document.querySelectorAll(".tab-button").forEach((button) => button.classList.toggle("is-active", button.dataset.section === sectionId));
   if (sectionId === "unreadSection") renderUnreadList();
-  if (sectionId === "historySection") renderHistory();
+  if (sectionId === "historySection") renderOutputData();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -824,8 +907,7 @@ function switchSection(sectionId) {
 function handleGlobalKeydown(event) {
   const ignored = [
     elements.manualScanInput, elements.targetEndDate, elements.masterFile,
-    elements.historySearch, elements.historyStartDate, elements.historyEndDate,
-    elements.historyFacility, elements.historyDepartment, elements.historyResult,
+    elements.outputSearch, elements.outputFacility, elements.outputDepartment, elements.outputReadStatus,
     elements.departmentSelect
   ];
   if (ignored.includes(event.target) || event.ctrlKey || event.metaKey || event.altKey) return;
@@ -852,10 +934,12 @@ function handleGlobalKeydown(event) {
 }
 
 async function processScan(rawValue) {
+  const beforeCounts = getTargetCounts();
   const result = acceptSpdLabel(rawValue);
   void saveScanHistory(createHistoryRecord(result, rawValue));
   if (result.ok) {
-    playSuccessSound();
+    if (isCompletionTransition(beforeCounts, result.counts)) playCompletionSound();
+    else playSuccessSound();
     showResult("ok", result.title, `${result.message}　未読取 ${result.counts.unread}件`, resultDetailsFor(result));
   } else {
     playAlertSound();
@@ -863,7 +947,16 @@ async function processScan(rawValue) {
   }
   renderCounts();
   renderUnreadList();
+  renderOutputData();
   return result;
+}
+
+function getPrintRowValues(row, index) {
+  return [
+    String(index + 1), row["品名"], row["規格"] || "―", row["製品番号"] || "―", row["ラベルキー"],
+    formatMasterDate(row["払出予定伝票日付"]), `${row["施設名称"]} / ${row["部署名称"]}`,
+    state.reissueLabelKeys.has(row["ラベルキー"]) ? "ラベル再発行" : ""
+  ];
 }
 
 function preparePrintSheet(now = new Date()) {
@@ -878,7 +971,7 @@ function preparePrintSheet(now = new Date()) {
   elements.printTableBody.replaceChildren();
   unread.forEach((row, index) => {
     const tr = document.createElement("tr");
-    [String(index + 1), row["ラベルキー"], row["施設名称"], row["部署名称"], row["品名"]].forEach((value) => {
+    getPrintRowValues(row, index).forEach((value) => {
       const td = document.createElement("td");
       td.textContent = value;
       tr.append(td);
@@ -949,25 +1042,45 @@ function bindEvents() {
   });
   elements.refreshUnreadButton.addEventListener("click", () => { renderCounts(); renderUnreadList(); });
 
-  [elements.historyStartDate, elements.historyEndDate, elements.historyFacility, elements.historyDepartment, elements.historyResult]
-    .forEach((input) => input.addEventListener("change", renderHistory));
-  elements.historySearch.addEventListener("input", renderHistory);
-  elements.shareHistoryButton.addEventListener("click", async () => {
-    try {
-      const records = filterHistory(state.history, getHistoryFiltersFromUi());
-      const method = await shareHistoryCsv(records);
-      elements.historyMessage.textContent = method === "shared" ? "共有画面を開きました。" : "CSVをダウンロードしました。";
-    } catch (error) {
-      if (error.name !== "AbortError") elements.historyMessage.textContent = error.message;
+  elements.unreadList.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action][data-label-key]");
+    if (!button) return;
+    const labelKey = button.dataset.labelKey;
+    if (button.dataset.action === "reissue") {
+      const enabled = toggleReissueLabel(labelKey);
+      elements.unreadActionMessage.textContent = enabled ? `ラベルキー ${labelKey} を再発行対象にしました。` : `ラベルキー ${labelKey} の再発行対象を解除しました。`;
+      renderUnreadList();
+      renderOutputData();
+      return;
     }
+    if (!confirm(`ラベルキー ${labelKey} を現物確認済として読取済にしますか？`)) return;
+    const beforeCounts = getTargetCounts();
+    const result = confirmUnreadLabel(labelKey);
+    if (!result.ok) {
+      playAlertSound();
+      elements.unreadActionMessage.textContent = result.message;
+      renderUnreadList();
+      return;
+    }
+    void saveScanHistory(createHistoryRecord(result, ""));
+    if (isCompletionTransition(beforeCounts, result.counts)) playCompletionSound();
+    else playSuccessSound();
+    elements.unreadActionMessage.textContent = `${result.row["品名"]}を手動確認で読取済にしました。未読取 ${result.counts.unread}件`;
+    renderCounts();
+    renderUnreadList();
+    renderOutputData();
   });
-  elements.clearHistoryButton.addEventListener("click", async () => {
-    if (!confirm("スマホ内の読取履歴をすべて削除します。元に戻せません。削除しますか？")) return;
+
+  [elements.outputFacility, elements.outputDepartment, elements.outputReadStatus]
+    .forEach((input) => input.addEventListener("change", renderOutputData));
+  elements.outputSearch.addEventListener("input", renderOutputData);
+  elements.exportDataButton.addEventListener("click", async () => {
     try {
-      await clearScanHistory();
-      elements.historyMessage.textContent = "読取履歴をすべて削除しました。";
+      const records = getOutputRecords();
+      const method = await shareOutputCsv(records);
+      elements.outputMessage.textContent = method === "shared" ? `${records.length}件の共有画面を開きました。` : `${records.length}件のCSVをダウンロードしました。`;
     } catch (error) {
-      elements.historyMessage.textContent = `履歴を削除できませんでした。${error.message}`;
+      if (error.name !== "AbortError") elements.outputMessage.textContent = error.message;
     }
   });
 
@@ -1001,7 +1114,8 @@ if (typeof module !== "undefined" && module.exports) {
     REQUIRED_HEADERS, state, normalizeLabelKey, splitTsvRecords, isValidDateKey, parseTsv, buildLabelKey, normalizeQr,
     getExpectedCenterCode, departmentKey, departmentFromRow, rebuildIndexes, findLabel, parseDateInput, validateTargetEndDate,
     isRowOnOrBeforeEndDate, matchesDepartment, getEligibleDepartments, getUniqueLabelRows, getCurrentTargetLabels, getUnreadLabels,
-    getTargetCounts, validateSpdLabel, acceptSpdLabel, todayInputValue, formatDateForDisplay, formatMasterDate, applyMasterData,
-    createHistoryRecord, filterHistory, buildHistoryCsv
+    getTargetCounts, getOutputTargetLabels, getOutputRecords, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
+    isCompletionTransition, getPrintRowValues, todayInputValue, formatDateForDisplay, formatMasterDate, applyMasterData, saveState, restoreState, createHistoryRecord,
+    createOutputRecord, filterOutputRecords, buildOutputCsv
   };
 }

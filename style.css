@@ -152,16 +152,26 @@ input[type="search"], select { width: 100%; min-width: 0; min-height: 42px; padd
 .filter-summary p:last-child { margin-bottom: 0; }
 .unread-list { display: grid; gap: 10px; }
 .unread-item { padding: 14px; border: 1px solid var(--line); border-left: 5px solid var(--red); border-radius: 10px; background: #fff; }
+.unread-item--reissue { border-color: #d99a1b; border-left-color: #d98200; background: #fffaf0; }
 .unread-item h3 { margin-bottom: 4px; font-size: 1.05rem; }
 .unread-item p { margin-bottom: 3px; color: var(--muted); }
+.unread-item .item-specification { color: var(--ink); font-weight: 800; }
 .unread-item .item-product { color: var(--ink); font-size: .85rem; font-weight: 800; }
 .unread-item .item-key { color: var(--ink); font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-weight: 800; }
+.unread-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-top: 12px; }
+.unread-actions .button { min-height: 48px; padding: 9px 8px; font-weight: 900; }
+.unread-confirm-button { border-color: var(--green); background: var(--green); }
+.unread-reissue-button { border: 2px solid #c36b00; color: #8a4900; background: #fff; }
+.unread-reissue-button.is-active { color: #fff; background: #c36b00; box-shadow: 0 0 0 3px #ffe0a8; }
 .empty-state { padding: 34px 16px; border: 2px dashed var(--line); border-radius: 12px; color: var(--muted); background: #fff; text-align: center; }
 
 .history-count { color: #713b91; }
 .history-filter-card { display: grid; gap: 8px; padding: 12px; }
 .history-date-row, .history-select-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .history-date-row label { display: grid; gap: 3px; color: var(--muted); font-size: .76rem; font-weight: 800; }
+.output-end-date { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid #ccb5dd; border-radius: 9px; color: #5b2d78; background: #f7f0fb; }
+.output-end-date span { font-size: .8rem; font-weight: 800; }
+.output-end-date strong { font-size: 1.08rem; }
 .history-actions { margin-bottom: 6px; }
 .history-actions .button { width: 100%; min-height: 46px; padding: 8px; font-size: .88rem; }
 .inline-message { min-height: 1.2em; margin-bottom: 8px; color: var(--muted); font-size: .8rem; font-weight: 700; }
@@ -169,8 +179,9 @@ input[type="search"], select { width: 100%; min-width: 0; min-height: 42px; padd
 .history-item { padding: 11px 12px; border: 1px solid var(--line); border-left: 5px solid #7c8791; border-radius: 10px; background: #fff; }
 .history-item--ok { border-left-color: var(--green); }
 .history-item--ng { border-left-color: var(--red); }
+.history-item--unread { border-left-color: var(--amber); }
 .history-item-heading { display: flex; justify-content: space-between; gap: 8px; }
-.history-item-heading time { color: var(--muted); font-size: .75rem; }
+.history-item-heading span, .history-item-heading time { color: var(--muted); font-size: .75rem; }
 .history-item h3 { margin: 4px 0; font-size: .95rem; }
 .history-item p { margin-bottom: 2px; color: var(--muted); font-size: .82rem; }
 .history-item .item-key { color: var(--ink); overflow-wrap: anywhere; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
@@ -225,6 +236,8 @@ input[type="search"], select { width: 100%; min-width: 0; min-height: 42px; padd
   .count-card span { font-size: .72rem; }
   .count-card strong { margin-top: 0; font-size: clamp(1.55rem, 8vw, 2.1rem); line-height: 1.15; }
   .history-filter-card { padding: 9px; }
+  .unread-actions { gap: 8px; }
+  .unread-actions .button { min-height: 50px; }
 }
 
 @media (max-width: 390px) {
@@ -242,7 +255,7 @@ input[type="search"], select { width: 100%; min-width: 0; min-height: 42px; padd
   .print-summary div { display: grid; grid-template-columns: 7em 1fr; }
   .print-summary dt { font-weight: 700; }
   .print-summary dd { margin: 0; }
-  .print-sheet table { width: 100%; border-collapse: collapse; font-size: 9pt; }
+  .print-sheet table { width: 100%; border-collapse: collapse; font-size: 7.5pt; }
   .print-sheet th, .print-sheet td { padding: 2mm; border: 1px solid #555; text-align: left; vertical-align: top; }
   .print-sheet th { background: #eee; }
   .print-sheet tr { break-inside: avoid; }

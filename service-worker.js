@@ -1,18 +1,19 @@
 "use strict";
 
-const CACHE_NAME = "inventory-kun-v4";
+const CACHE_NAME = "inventory-kun-v5";
 const APP_ASSETS = [
   "./",
   "./index.html",
-  "./style.css?v=20260820-4",
-  "./app.js?v=20260820-4",
+  "./style.css?v=20260820-5",
+  "./app.js?v=20260820-5",
   "./manifest.webmanifest",
   "./icons/favicon-32.png",
   "./icons/apple-touch-icon.png",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
   "./ok.wav",
-  "./alert.wav"
+  "./alert.wav",
+  "./complete.wav"
 ];
 
 self.addEventListener("install", (event) => {
