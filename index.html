@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#123a63">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="棚卸くん">
+  <title>棚卸くん</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="stylesheet" href="style.css?v=20260820-2">
+</head>
+<body>
+  <header class="app-header">
+    <div><p class="eyebrow">病院内 SPDラベル棚卸</p><h1>棚卸くん</h1></div>
+    <span id="masterStatusBadge" class="status-badge status-badge--ng">マスター未読込</span>
+  </header>
+
+  <nav class="tab-bar" aria-label="画面切替">
+    <button class="tab-button is-active" type="button" data-section="checkSection">棚卸<br class="mobile-break">チェック</button>
+    <button class="tab-button" type="button" data-section="unreadSection">未読取<br class="mobile-break">一覧</button>
+    <button class="tab-button" type="button" data-section="historySection">読取<br class="mobile-break">履歴</button>
+    <button class="tab-button" type="button" data-section="masterSection">マスター<br class="mobile-break">管理</button>
+  </nav>
+
+  <main>
+    <section id="checkSection" class="screen is-active" aria-labelledby="checkHeading">
+      <h2 id="checkHeading" class="visually-hidden">棚卸チェック</h2>
+
+      <section class="department-card" aria-labelledby="departmentHeading">
+        <p id="departmentHeading" class="card-label">棚卸対象部署</p>
+        <label class="visually-hidden" for="departmentSelect">施設・部署を選択</label>
+        <select id="departmentSelect" class="department-select" disabled><option value="">マスターを読み込んでください</option></select>
+        <p id="currentFacility" class="facility-name">施設未選択</p>
+        <p id="currentDepartment" class="department-name">部署を選択してください</p>
+        <p id="currentDepartmentCode" class="department-code">施設コード：―　部署コード：―</p>
+      </section>
+
+      <section id="resultPanel" class="result-panel result-panel--idle" aria-live="assertive" aria-atomic="true">
+        <div class="result-topline">
+          <p class="result-caption">最新判定</p>
+          <p id="modeStatus" class="mode-status mode-status--container">● マスター待ち</p>
+        </div>
+        <p id="resultTitle" class="result-title">待機中</p>
+        <p id="resultMessage" class="result-message">マスターを読み込んでください</p>
+        <dl id="resultDetails" class="result-details"></dl>
+      </section>
+
+      <div class="count-grid" aria-label="読取状況">
+        <div class="count-card"><span>対象総数</span><strong id="targetCount">0</strong></div>
+        <div class="count-card count-card--read"><span>読取済</span><strong id="readCount">0</strong></div>
+        <div class="count-card count-card--unread"><span>未読取</span><strong id="unreadCount">0</strong></div>
+      </div>
+
+      <div class="period-card card">
+        <p class="card-label">SPDラベル日付</p>
+        <div class="period-inputs period-inputs--end-only">
+          <label for="targetEndDate">対象終了日<input id="targetEndDate" type="date"></label>
+          <strong class="period-suffix">まで</strong>
+        </div>
+        <p id="periodError" class="field-error" role="alert"></p>
+      </div>
+
+      <input id="scanInput" class="hid-scan-input" type="text" inputmode="none" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Bluetoothリーダー入力" disabled>
+      <details class="manual-panel">
+        <summary>ローカルテスト用の手入力</summary>
+        <label for="manualScanInput">32桁SPDラベル読取値</label>
+        <div class="manual-row"><input id="manualScanInput" type="text" inputmode="numeric" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="manualScanButton" class="button" type="button">読取</button></div>
+      </details>
+      <p id="scannerBufferStatus" class="scanner-status">部署選択後に読取できます</p>
+    </section>
+
+    <section id="unreadSection" class="screen" aria-labelledby="unreadHeading">
+      <div class="section-heading-row">
+        <div><p class="eyebrow">棚卸が未完了のSPDラベル</p><h2 id="unreadHeading">未読取一覧</h2></div>
+        <div class="section-actions"><button id="refreshUnreadButton" class="button button--secondary" type="button">更新</button><button id="printPreviewButton" class="button button--secondary" type="button" disabled>印刷プレビュー</button></div>
+      </div>
+      <div class="filter-summary"><p id="unreadPeriodLabel">対象終了日：―</p><p id="unreadDepartmentLabel">対象部署：指定なし</p></div>
+      <div class="count-grid">
+        <div class="count-card"><span>対象総数</span><strong id="unreadTargetCount">0</strong></div>
+        <div class="count-card count-card--read"><span>読取済</span><strong id="unreadReadCount">0</strong></div>
+        <div class="count-card count-card--unread"><span>未読取</span><strong id="unreadRemainingCount">0</strong></div>
+      </div>
+      <div id="unreadList" class="unread-list"></div>
+    </section>
+
+    <section id="historySection" class="screen" aria-labelledby="historyHeading">
+      <div class="section-heading-row"><div><p class="eyebrow">スマホ内の作業実績</p><h2 id="historyHeading">読取履歴</h2></div><strong id="historyCount" class="history-count">0件</strong></div>
+      <section class="card history-filter-card">
+        <div class="history-date-row"><label>開始日<input id="historyStartDate" type="date"></label><label>終了日<input id="historyEndDate" type="date"></label></div>
+        <div class="history-select-row"><select id="historyFacility" aria-label="施設"><option value="">すべての施設</option></select><select id="historyDepartment" aria-label="部署"><option value="">すべての部署</option></select></div>
+        <div class="history-select-row"><select id="historyResult" aria-label="判定"><option value="">すべての判定</option><option value="OK">OK</option><option value="NG">NG</option></select><input id="historySearch" type="search" placeholder="品名・ラベルキー"></div>
+      </section>
+      <div class="history-actions"><button id="shareHistoryButton" class="button button--secondary" type="button">CSV出力</button></div>
+      <p id="historyMessage" class="inline-message" aria-live="polite"></p>
+      <div id="historyList" class="history-list"></div>
+      <details class="danger-zone"><summary>履歴の管理</summary><p>履歴削除は元に戻せません。</p><button id="clearHistoryButton" class="button button--danger-light" type="button">履歴をすべて削除</button></details>
+    </section>
+
+    <section id="masterSection" class="screen" aria-labelledby="masterHeading">
+      <div class="section-heading-row"><div><p class="eyebrow">データの取込と確認</p><h2 id="masterHeading">マスター管理</h2></div></div>
+      <section class="card master-import-card">
+        <label class="file-button" for="masterFile">ラベルマスタ.tsvを選択</label>
+        <input id="masterFile" class="visually-hidden" type="file" accept=".tsv,text/tab-separated-values,text/plain">
+        <p class="help-text">CP932（Shift-JIS系）のTSVを読み込みます。正常に検証できた場合だけ、現在のマスターと棚卸状態を置き換えます。</p>
+        <p id="importMessage" class="import-message" aria-live="polite"></p>
+      </section>
+      <section class="card master-import-card">
+        <h3>SharePointから取得</h3>
+        <p class="help-text">棚卸くん / _在庫差異データ / 在庫差異.tsv を読取専用で取得します。</p>
+        <div class="sharepoint-actions"><button id="sharePointLoginButton" class="button button--secondary" type="button">Microsoft 365にログイン</button><button id="sharePointLoadButton" class="button" type="button" disabled>在庫差異.tsvを取得</button></div>
+      </section>
+      <section class="card"><h3>マスター情報</h3><dl class="master-details">
+        <div><dt>状態</dt><dd id="masterLoaded">未読込</dd></div>
+        <div><dt>ファイル名</dt><dd id="masterFileName">―</dd></div>
+        <div><dt>施設</dt><dd id="masterFacilityName">―</dd></div>
+        <div><dt>取込元</dt><dd id="masterSource">―</dd></div>
+        <div><dt>取込日時</dt><dd id="masterImportedAt">―</dd></div>
+        <div><dt>取込件数</dt><dd id="masterRowCount">0件</dd></div>
+        <div><dt>ラベル日付 最後</dt><dd id="masterMaxDate">―</dd></div>
+      </dl><p id="masterSummary" class="visually-hidden">ラベルマスタ.tsvを読み込んでください。</p></section>
+      <section class="card"><h3>音声</h3><p class="help-text">iPhoneでは、最初に一度タップすると音声を再生しやすくなります。</p><button id="enableAudioButton" class="button button--secondary" type="button">音声を有効化</button> <span id="audioStatus" class="inline-status">未確認</span></section>
+    </section>
+  </main>
+
+  <section id="printSheet" class="print-sheet" aria-hidden="true">
+    <h1>棚卸くん 未読取一覧</h1>
+    <dl class="print-summary">
+      <div><dt>印刷日時</dt><dd id="printDateTime">―</dd></div><div><dt>対象終了日</dt><dd id="printEndDate">―</dd></div>
+      <div><dt>施設名</dt><dd id="printFacility">―</dd></div><div><dt>部署名</dt><dd id="printDepartment">―</dd></div>
+      <div><dt>件数</dt><dd id="printCounts">―</dd></div>
+    </dl>
+    <table><thead><tr><th>No.</th><th>ラベルキー</th><th>施設名</th><th>部署名</th><th>品名</th></tr></thead><tbody id="printTableBody"></tbody></table>
+  </section>
+
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@5.17.3/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+  <script src="app.js?v=20260820-2"></script>
+</body>
+</html>
