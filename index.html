@@ -11,7 +11,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
-  <link rel="stylesheet" href="style.css?v=20260820-2">
+  <link rel="stylesheet" href="style.css?v=20260820-3">
 </head>
 <body>
   <header class="app-header">
@@ -64,7 +64,6 @@
         <p id="periodError" class="field-error" role="alert"></p>
       </div>
 
-      <input id="scanInput" class="hid-scan-input" type="text" inputmode="none" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Bluetoothリーダー入力" disabled>
       <details class="manual-panel">
         <summary>ローカルテスト用の手入力</summary>
         <label for="manualScanInput">32桁SPDラベル読取値</label>
@@ -108,11 +107,6 @@
         <p class="help-text">CP932（Shift-JIS系）のTSVを読み込みます。正常に検証できた場合だけ、現在のマスターと棚卸状態を置き換えます。</p>
         <p id="importMessage" class="import-message" aria-live="polite"></p>
       </section>
-      <section class="card master-import-card">
-        <h3>SharePointから取得</h3>
-        <p class="help-text">棚卸くん / _在庫差異データ / 在庫差異.tsv を読取専用で取得します。</p>
-        <div class="sharepoint-actions"><button id="sharePointLoginButton" class="button button--secondary" type="button">Microsoft 365にログイン</button><button id="sharePointLoadButton" class="button" type="button" disabled>在庫差異.tsvを取得</button></div>
-      </section>
       <section class="card"><h3>マスター情報</h3><dl class="master-details">
         <div><dt>状態</dt><dd id="masterLoaded">未読込</dd></div>
         <div><dt>ファイル名</dt><dd id="masterFileName">―</dd></div>
@@ -136,7 +130,6 @@
     <table><thead><tr><th>No.</th><th>ラベルキー</th><th>施設名</th><th>部署名</th><th>品名</th></tr></thead><tbody id="printTableBody"></tbody></table>
   </section>
 
-  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@5.17.3/lib/msal-browser.min.js" crossorigin="anonymous"></script>
-  <script src="app.js?v=20260820-2"></script>
+  <script src="app.js?v=20260820-3"></script>
 </body>
 </html>

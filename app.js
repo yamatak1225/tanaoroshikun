@@ -5,13 +5,6 @@ const HISTORY_DB_NAME = "inventory-kun-history-v1";
 const HISTORY_STORE_NAME = "scanHistory";
 const REQUIRED_HEADERS = ["施設コード", "施設名称", "部署コード", "部署名称", "品名", "製品番号", "ラベルキー", "払出予定伝票日付"];
 const DEPARTMENT_SEPARATOR = "\u001f";
-const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
-const GRAPH_CLIENT_ID = "d588eb21-0ff2-4a4f-bb27-80d9e3d320c1";
-const GRAPH_TENANT_ID = "fd272e65-3178-4742-a6ad-66199883422e";
-const GRAPH_SCOPES = ["Files.Read"];
-const GRAPH_PENDING_ACTION_KEY = "inventoryKunGraphPendingAction";
-const SHAREPOINT_FOLDER_URL = "https://sunmedix01.sharepoint.com/:f:/s/SPDapplication/IgA-yvTXGnzBRqMOV7x0aZChAXAywAMa_37kVCQz30ysGLU?e=JpFwAV";
-const SHAREPOINT_FILE_NAME = "在庫差異.tsv";
 
 const state = {
   masterRows: [],
@@ -20,13 +13,14 @@ const state = {
   readLabelKeys: new Set(),
   targetEndDate: "",
   currentDepartment: null,
-  history: []
+  history: [],
+  scannerBuffer: "",
+  scannerTimer: null
 };
 
 let elements = {};
 let successSound = null;
 let alertSound = null;
-let msalInstance = null;
 let historyDbPromise = null;
 
 function normalizeHeader(value) { return String(value ?? "").replace(/^\uFEFF/, "").trim(); }
@@ -545,13 +539,22 @@ function initAudio() {
 
 async function unlockAudio() {
   initAudio();
-  if (!successSound || !alertSound) throw new Error("このブラウザでは音声を利用できません。");
-  for (const sound of [successSound, alertSound]) {
-    sound.volume = 0;
-    await sound.play();
-    sound.pause();
-    sound.currentTime = 0;
-    sound.volume = 1;
+  const sounds = [successSound, alertSound].filter(Boolean);
+  if (sounds.length !== 2) {
+    elements.audioStatus.textContent = "有効化できません";
+    return false;
+  }
+  try {
+    sounds.forEach((sound) => { sound.muted = true; });
+    await Promise.all(sounds.map((sound) => sound.play()));
+    sounds.forEach((sound) => { sound.pause(); sound.currentTime = 0; sound.muted = false; });
+    elements.audioStatus.textContent = "有効";
+    return true;
+  } catch (error) {
+    sounds.forEach((sound) => { sound.pause(); sound.currentTime = 0; sound.muted = false; });
+    elements.audioStatus.textContent = "有効化できません";
+    console.error("音声の有効化に失敗しました。", error);
+    return false;
   }
 }
 
@@ -570,10 +573,10 @@ function playAlertSound() { playSound("alert"); }
 
 function cacheElements() {
   const ids = [
-    "masterStatusBadge", "masterSummary", "masterFile", "sharePointLoginButton", "sharePointLoadButton", "enableAudioButton", "audioStatus", "importMessage",
+    "masterStatusBadge", "masterSummary", "masterFile", "enableAudioButton", "audioStatus", "importMessage",
     "masterLoaded", "masterFileName", "masterFacilityName", "masterSource", "masterImportedAt", "masterRowCount", "masterMaxDate",
     "targetEndDate", "periodError", "departmentSelect", "currentFacility", "currentDepartment", "currentDepartmentCode", "targetCount", "readCount", "unreadCount",
-    "resultPanel", "modeStatus", "resultTitle", "resultMessage", "resultDetails", "scanInput", "scannerBufferStatus", "manualScanInput", "manualScanButton",
+    "resultPanel", "modeStatus", "resultTitle", "resultMessage", "resultDetails", "scannerBufferStatus", "manualScanInput", "manualScanButton",
     "refreshUnreadButton", "printPreviewButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadList",
     "historyStartDate", "historyEndDate", "historyFacility", "historyDepartment", "historyResult", "historySearch", "historyCount", "historyList", "shareHistoryButton", "clearHistoryButton", "historyMessage",
     "printSheet", "printDateTime", "printEndDate", "printFacility", "printDepartment", "printCounts", "printTableBody"
@@ -673,8 +676,9 @@ function renderCounts() {
 
 function renderScanner() {
   const ready = Boolean(state.masterRows.length && state.currentDepartment && validateTargetEndDate().ok);
-  elements.scanInput.disabled = !ready;
-  elements.scannerBufferStatus.textContent = ready ? "Bluetoothリーダー入力待機中（Enterで確定）" : "部署選択後に読取できます";
+  elements.scannerBufferStatus.textContent = state.scannerBuffer
+    ? `Bluetoothリーダー入力中（${state.scannerBuffer.length}文字）`
+    : ready ? "Bluetoothリーダー入力待機中" : "部署選択後に読取できます";
   elements.modeStatus.textContent = ready ? "● SPDラベル待ち" : state.masterRows.length ? "● 部署選択待ち" : "● マスター待ち";
   elements.modeStatus.className = `mode-status ${ready ? "mode-status--spd" : "mode-status--container"}`;
   elements.printPreviewButton.disabled = !state.currentDepartment || !validateTargetEndDate().ok;
@@ -800,12 +804,38 @@ function switchSection(sectionId) {
   document.querySelectorAll(".tab-button").forEach((button) => button.classList.toggle("is-active", button.dataset.section === sectionId));
   if (sectionId === "unreadSection") renderUnreadList();
   if (sectionId === "historySection") renderHistory();
-  if (sectionId === "checkSection") focusScanner();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
-function focusScanner() {
-  if (!elements.scanInput?.disabled) window.setTimeout(() => elements.scanInput.focus({ preventScroll: true }), 0);
+// SPD出荷チェッカーと同じく、HIDリーダーのキー入力を画面全体で蓄積しEnterで確定する。
+function handleGlobalKeydown(event) {
+  const ignored = [
+    elements.manualScanInput, elements.targetEndDate, elements.masterFile,
+    elements.historySearch, elements.historyStartDate, elements.historyEndDate,
+    elements.historyFacility, elements.historyDepartment, elements.historyResult,
+    elements.departmentSelect
+  ];
+  if (ignored.includes(event.target) || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.key === "Enter") {
+    if (state.scannerBuffer) {
+      event.preventDefault();
+      const scan = state.scannerBuffer;
+      state.scannerBuffer = "";
+      clearTimeout(state.scannerTimer);
+      renderScanner();
+      void processScan(scan);
+    }
+    return;
+  }
+  if (event.key.length === 1) {
+    state.scannerBuffer += event.key;
+    clearTimeout(state.scannerTimer);
+    state.scannerTimer = setTimeout(() => {
+      state.scannerBuffer = "";
+      renderScanner();
+    }, 1500);
+    renderScanner();
+  }
 }
 
 async function processScan(rawValue) {
@@ -820,8 +850,6 @@ async function processScan(rawValue) {
   }
   renderCounts();
   renderUnreadList();
-  elements.scanInput.value = "";
-  focusScanner();
   return result;
 }
 
@@ -847,153 +875,6 @@ function preparePrintSheet(now = new Date()) {
   return true;
 }
 
-class GraphApiError extends Error {
-  constructor(httpStatus, graphCode, message, api) {
-    super(message);
-    this.name = "GraphApiError";
-    this.httpStatus = httpStatus;
-    this.graphCode = graphCode;
-    this.api = api;
-  }
-}
-
-function formatGraphError(error) {
-  if (error instanceof GraphApiError) return `${error.graphCode}：${error.message}（${error.api}）`;
-  return error?.errorMessage || error?.message || "原因を特定できないエラーが発生しました。";
-}
-
-function encodeSharingUrl(sharingUrl) {
-  const bytes = new TextEncoder().encode(sharingUrl);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return `u!${btoa(binary).replace(/=+$/g, "").replace(/\//g, "_").replace(/\+/g, "-")}`;
-}
-
-async function graphFetchJson(url, accessToken, api) {
-  let response;
-  try {
-    response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
-  } catch {
-    throw new GraphApiError(null, "NetworkError", "ネットワーク接続を確認してください。", api);
-  }
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new GraphApiError(response.status, body?.error?.code || `HTTP_${response.status}`, body?.error?.message || "Microsoft Graphからエラーが返されました。", api);
-  }
-  return response.json();
-}
-
-async function downloadGraphFile(metadata, accessToken) {
-  if (!metadata.file || metadata.name !== SHAREPOINT_FILE_NAME) throw new GraphApiError(200, "unexpectedDriveItem", `対象が${SHAREPOINT_FILE_NAME}ではありません。`, "driveItem検証");
-  if (metadata.size > MAX_DOWNLOAD_BYTES) throw new GraphApiError(null, "fileTooLarge", `${MAX_DOWNLOAD_BYTES.toLocaleString("ja-JP")}バイトを超えるファイルは取得しません。`, "ファイルサイズ検証");
-  const driveId = metadata.parentReference?.driveId;
-  let response;
-  const downloadUrl = metadata["@microsoft.graph.downloadUrl"];
-  const api = downloadUrl ? "@microsoft.graph.downloadUrl" : `GET /drives/${driveId}/items/${metadata.id}/content`;
-  try {
-    response = downloadUrl
-      ? await fetch(downloadUrl)
-      : await fetch(`https://graph.microsoft.com/v1.0/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(metadata.id)}/content`, { headers: { Authorization: `Bearer ${accessToken}` } });
-  } catch {
-    throw new GraphApiError(null, "NetworkError", "ファイル本体を取得できませんでした。", api);
-  }
-  if (!response.ok) throw new GraphApiError(response.status, `HTTP_${response.status}`, "ファイル本体を取得できませんでした。", api);
-  return response.arrayBuffer();
-}
-
-function getRedirectUri() {
-  return `${window.location.origin}${window.location.pathname}`;
-}
-
-function selectMsalAccount(response = null) {
-  if (!msalInstance) return null;
-  const account = response?.account || msalInstance.getActiveAccount() || msalInstance.getAllAccounts()[0] || null;
-  if (account) msalInstance.setActiveAccount(account);
-  return account;
-}
-
-function updateGraphButtons(account) {
-  elements.sharePointLoginButton.textContent = account ? "Microsoft 365アカウント変更" : "Microsoft 365にログイン";
-  elements.sharePointLoadButton.disabled = !account;
-}
-
-async function acquireGraphToken(account) {
-  try {
-    return await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account });
-  } catch (error) {
-    const codes = new Set(["interaction_required", "login_required", "consent_required", "no_tokens_found"]);
-    if (error?.name === "InteractionRequiredAuthError" || codes.has(error?.errorCode)) {
-      sessionStorage.setItem(GRAPH_PENDING_ACTION_KEY, "loadSharePoint");
-      await msalInstance.acquireTokenRedirect({ scopes: GRAPH_SCOPES, account });
-      return null;
-    }
-    throw error;
-  }
-}
-
-async function loadSharePointMaster() {
-  const account = selectMsalAccount();
-  if (!account) {
-    showImportMessage("先にMicrosoft 365へログインしてください。", "error");
-    return;
-  }
-  elements.sharePointLoadButton.disabled = true;
-  showImportMessage("SharePointから在庫差異.tsvを読み込んでいます。", "info");
-  try {
-    const token = await acquireGraphToken(account);
-    if (!token) return;
-    const sharingId = encodeSharingUrl(SHAREPOINT_FOLDER_URL);
-    const sharedApi = "GET /shares/{sharingId}/driveItem";
-    const folder = await graphFetchJson(`https://graph.microsoft.com/v1.0/shares/${sharingId}/driveItem`, token.accessToken, sharedApi);
-    const driveId = folder.remoteItem?.parentReference?.driveId || folder.parentReference?.driveId;
-    const folderId = folder.remoteItem?.id || folder.id;
-    if (!driveId || !folderId || !(folder.folder || folder.remoteItem?.folder)) {
-      throw new GraphApiError(200, "unexpectedSharedItem", "共有リンクから対象フォルダを特定できませんでした。", sharedApi);
-    }
-    const childApi = `GET /drives/{driveId}/items/{folderId}:/${SHAREPOINT_FILE_NAME}`;
-    const fileUrl = `https://graph.microsoft.com/v1.0/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(folderId)}:/${encodeURIComponent(SHAREPOINT_FILE_NAME)}`;
-    const metadata = await graphFetchJson(fileUrl, token.accessToken, childApi);
-    const buffer = await downloadGraphFile(metadata, token.accessToken);
-    const parsed = parseTsv(decodeMasterBuffer(buffer));
-    const applied = applyMasterData(parsed.rows, {
-      fileName: metadata.name,
-      size: metadata.size,
-      lastModified: Date.parse(metadata.lastModifiedDateTime) || 0,
-      source: "SharePoint"
-    });
-    renderAll();
-    showImportMessage(`SharePointから${applied.rowCount.toLocaleString("ja-JP")}件を読み込み、棚卸状態をリセットしました。${applied.masterSaved ? "" : " ブラウザ保存容量が不足したため、再起動後は再取込が必要です。"}`, "ok");
-  } catch (error) {
-    showImportMessage(`SharePointから取得できませんでした。${formatGraphError(error)} 手動TSV取込は引き続き利用できます。`, "error");
-  } finally {
-    updateGraphButtons(selectMsalAccount());
-  }
-}
-
-async function initializeGraph() {
-  if (!globalThis.msal?.PublicClientApplication) {
-    elements.sharePointLoginButton.disabled = true;
-    showImportMessage("Microsoft認証ライブラリを読み込めませんでした。手動TSV取込を利用してください。", "error");
-    return;
-  }
-  msalInstance = new globalThis.msal.PublicClientApplication({
-    auth: { clientId: GRAPH_CLIENT_ID, authority: `https://login.microsoftonline.com/${GRAPH_TENANT_ID}`, redirectUri: getRedirectUri() },
-    cache: { cacheLocation: "sessionStorage" }
-  });
-  try {
-    await msalInstance.initialize();
-    const redirectResponse = await msalInstance.handleRedirectPromise();
-    const account = selectMsalAccount(redirectResponse);
-    updateGraphButtons(account);
-    const pending = sessionStorage.getItem(GRAPH_PENDING_ACTION_KEY);
-    sessionStorage.removeItem(GRAPH_PENDING_ACTION_KEY);
-    if (account && pending === "loadSharePoint") await loadSharePointMaster();
-  } catch (error) {
-    updateGraphButtons(null);
-    showImportMessage(`Microsoft 365認証を初期化できませんでした。${formatGraphError(error)}`, "error");
-  }
-}
-
 function bindEvents() {
   document.querySelectorAll(".tab-button").forEach((button) => button.addEventListener("click", () => switchSection(button.dataset.section)));
 
@@ -1010,72 +891,48 @@ function bindEvents() {
       showImportMessage(error.message, "error");
       playAlertSound();
     } finally {
+      elements.masterFile.blur();
       elements.masterFile.value = "";
     }
   });
 
   elements.targetEndDate.addEventListener("change", () => {
     state.targetEndDate = elements.targetEndDate.value;
+    elements.targetEndDate.blur();
     saveState();
     renderAll();
     showResult("idle", "対象終了日を更新しました", `${formatDateForDisplay(state.targetEndDate)}までのデータで再計算しました。`);
-    focusScanner();
   });
 
   elements.departmentSelect.addEventListener("change", () => {
     const selected = getEligibleDepartments().find((department) => departmentKey(department) === elements.departmentSelect.value) || null;
     state.currentDepartment = selected;
+    elements.departmentSelect.blur();
     saveState();
     renderAll();
     if (selected) {
       showResult("idle", "棚卸を開始できます", `${selected.facilityName} / ${selected.departmentName} のSPDラベルを読み取ってください。`);
-      focusScanner();
+      playSuccessSound();
     } else {
       showResult("idle", "部署未選択", "棚卸する施設・部署を選択してください。");
     }
   });
 
-  elements.scanInput.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    const raw = elements.scanInput.value;
-    elements.scanInput.value = "";
-    void processScan(raw);
-  });
-  elements.scanInput.addEventListener("blur", (event) => {
-    const next = event.relatedTarget;
-    if (next && next.matches?.("button, input, select, summary, label")) return;
-    if (document.visibilityState === "visible") {
-      window.setTimeout(() => {
-        if (document.activeElement === document.body) focusScanner();
-      }, 150);
-    }
-  });
   elements.manualScanButton.addEventListener("click", () => {
     const raw = elements.manualScanInput.value;
     elements.manualScanInput.value = "";
+    elements.manualScanInput.blur();
     void processScan(raw);
   });
   elements.manualScanInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); elements.manualScanButton.click(); }
   });
 
-  elements.enableAudioButton.addEventListener("click", async () => {
-    try {
-      await unlockAudio();
-      elements.audioStatus.textContent = "音声：有効";
-      showResult("ok", "音声を有効化しました", "正常音と警告音を再生できます。");
-    } catch (error) {
-      elements.audioStatus.textContent = "音声：利用不可";
-      showResult("ng", "音声を有効化できません", error.message);
-    }
-    focusScanner();
-  });
+  elements.enableAudioButton.addEventListener("click", () => { void unlockAudio(); });
 
   elements.printPreviewButton.addEventListener("click", () => {
     if (!preparePrintSheet()) return;
     window.print();
-    focusScanner();
   });
   elements.refreshUnreadButton.addEventListener("click", () => { renderCounts(); renderUnreadList(); });
 
@@ -1101,15 +958,7 @@ function bindEvents() {
     }
   });
 
-  elements.sharePointLoginButton.addEventListener("click", async () => {
-    if (!msalInstance) return;
-    try {
-      await msalInstance.loginRedirect({ scopes: GRAPH_SCOPES, prompt: "select_account" });
-    } catch (error) {
-      showImportMessage(`Microsoft 365ログインを開始できませんでした。${formatGraphError(error)}`, "error");
-    }
-  });
-  elements.sharePointLoadButton.addEventListener("click", () => { void loadSharePointMaster(); });
+  window.addEventListener("keydown", handleGlobalKeydown);
 }
 
 async function init() {
@@ -1121,8 +970,6 @@ async function init() {
   await loadScanHistory();
   if (state.currentDepartment) showResult("idle", "読取待機中", `${state.currentDepartment.facilityName} / ${state.currentDepartment.departmentName} のSPDラベルを読み取ってください。`);
   document.body.dataset.appReady = "true";
-  await initializeGraph();
-  focusScanner();
 }
 
 function registerServiceWorker() {
