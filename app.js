@@ -234,6 +234,25 @@ function getTargetCounts() {
   return { target: targets.length, read, unread: targets.length - read };
 }
 
+function getDepartmentProgress(rows = state.masterRows) {
+  return getEligibleDepartments(rows).map((department) => {
+    const targets = getUniqueLabelRows(rows.filter((row) => isRowOnOrBeforeEndDate(row) && matchesDepartment(row, department)));
+    const read = targets.filter((row) => state.readLabelKeys.has(row["ラベルキー"])).length;
+    return { ...department, target: targets.length, read, unread: targets.length - read, completed: targets.length > 0 && read === targets.length };
+  });
+}
+
+function getOverallProgress(rows = state.masterRows) {
+  const departments = getDepartmentProgress(rows);
+  return departments.reduce((summary, department) => {
+    summary.target += department.target;
+    summary.read += department.read;
+    summary.unread += department.unread;
+    if (department.completed) summary.completedDepartments += 1;
+    return summary;
+  }, { departments, target: 0, read: 0, unread: 0, completedDepartments: 0, totalDepartments: departments.length });
+}
+
 function validateSpdLabel(rawValue) {
   if (!state.masterInfo || !state.masterRows.length) {
     return { ok: false, code: "NO_MASTER", title: "マスター未読込", message: "先に在庫差異.tsvを読み込んでください。" };
@@ -651,10 +670,11 @@ function cacheElements() {
   const ids = [
     "masterStatusBadge", "masterSummary", "masterFile", "enableAudioButton", "audioStatus", "importMessage",
     "masterLoaded", "masterFileName", "masterFacilityName", "masterSource", "masterImportedAt", "masterRowCount", "masterErrorExcludedCount", "masterMaxDate",
-    "targetEndDate", "periodError", "departmentSelect", "currentFacility", "currentDepartment", "currentDepartmentCode", "targetCount", "readCount", "unreadCount",
+    "targetEndDate", "periodError", "departmentSelect", "overallStatusButton", "currentFacility", "currentDepartment", "currentDepartmentCode", "targetCount", "readCount", "unreadCount",
     "resultPanel", "modeStatus", "resultTitle", "resultMessage", "resultDetails", "scannerBufferStatus", "manualScanInput", "manualScanButton",
     "refreshUnreadButton", "printPreviewButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadActionMessage", "unreadList",
     "outputEndDate", "outputFacility", "outputDepartment", "outputReadStatus", "outputSearch", "outputCount", "outputList", "exportDataButton", "outputMessage",
+    "overallStatusDialog", "overallStatusCloseButton", "overallEndDate", "overallTargetCount", "overallReadCount", "overallUnreadCount", "overallCompletedCount", "overallDepartmentList",
     "printSheet", "printDateTime", "printEndDate", "printFacility", "printDepartment", "printCounts", "printTableBody"
   ];
   elements = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
@@ -727,6 +747,7 @@ function renderDepartmentOptions() {
     elements.departmentSelect.append(option);
   });
   elements.departmentSelect.disabled = !departments.length;
+  elements.overallStatusButton.disabled = !departments.length;
   if (previous && departments.some((department) => departmentKey(department) === previous)) {
     elements.departmentSelect.value = previous;
   } else if (state.currentDepartment) {
@@ -749,6 +770,77 @@ function renderCounts() {
   elements.unreadTargetCount.textContent = counts.target;
   elements.unreadReadCount.textContent = counts.read;
   elements.unreadRemainingCount.textContent = counts.unread;
+}
+
+function renderOverallStatus() {
+  if (elements.overallStatusDialog.hidden) return;
+  const progress = getOverallProgress();
+  elements.overallEndDate.textContent = `対象終了日：${formatDateForDisplay(state.targetEndDate)}`;
+  elements.overallTargetCount.textContent = progress.target;
+  elements.overallReadCount.textContent = progress.read;
+  elements.overallUnreadCount.textContent = progress.unread;
+  elements.overallCompletedCount.textContent = `${progress.completedDepartments} / ${progress.totalDepartments}`;
+  elements.overallDepartmentList.replaceChildren();
+  if (!progress.departments.length) {
+    const empty = document.createElement("p");
+    empty.className = "overall-empty";
+    empty.textContent = "対象終了日以前の部署がありません。";
+    elements.overallDepartmentList.append(empty);
+    return;
+  }
+  progress.departments.forEach((department) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `overall-department-item${department.completed ? " is-complete" : ""}`;
+    button.dataset.departmentKey = departmentKey(department);
+    const heading = document.createElement("span");
+    heading.className = "overall-department-heading";
+    const name = document.createElement("strong");
+    name.textContent = `${department.facilityName} / ${department.departmentName}`;
+    const status = document.createElement("span");
+    status.className = "overall-department-status";
+    status.textContent = department.completed ? "完了" : "未完了";
+    heading.append(name, status);
+    const counts = document.createElement("span");
+    counts.className = "overall-department-counts";
+    [
+      `対象 ${department.target}件`,
+      `読取済 ${department.read}件`,
+      `未読取 ${department.unread}件`
+    ].forEach((text) => {
+      const value = document.createElement("span");
+      value.textContent = text;
+      counts.append(value);
+    });
+    button.append(heading, counts);
+    elements.overallDepartmentList.append(button);
+  });
+}
+
+function openOverallStatus() {
+  if (elements.overallStatusButton.disabled) return;
+  elements.overallStatusDialog.hidden = false;
+  document.body.classList.add("has-modal");
+  renderOverallStatus();
+  elements.overallStatusCloseButton.focus();
+}
+
+function closeOverallStatus() {
+  elements.overallStatusDialog.hidden = true;
+  document.body.classList.remove("has-modal");
+  elements.overallStatusButton.focus();
+}
+
+function selectDepartmentForInventory(selected) {
+  state.currentDepartment = selected;
+  saveState();
+  renderAll();
+  if (selected) {
+    showResult("idle", "棚卸を開始できます", `${selected.facilityName} / ${selected.departmentName} のSPDラベルを読み取ってください。`);
+    playSuccessSound();
+  } else {
+    showResult("idle", "部署未選択", "棚卸する施設・部署を選択してください。");
+  }
 }
 
 function renderScanner() {
@@ -893,6 +985,7 @@ function renderAll() {
   renderScanner();
   renderUnreadList();
   renderOutputData();
+  renderOverallStatus();
 }
 
 function switchSection(sectionId) {
@@ -948,12 +1041,13 @@ async function processScan(rawValue) {
   renderCounts();
   renderUnreadList();
   renderOutputData();
+  renderOverallStatus();
   return result;
 }
 
 function getPrintRowValues(row, index) {
   return [
-    String(index + 1), row["品名"], row["規格"] || "―", row["製品番号"] || "―", row["ラベルキー"],
+    String(index + 1), row["品名"], row["規格"] || "―", row["商品コード"] || "―", row["製品番号"] || "―", row["ラベルキー"],
     formatMasterDate(row["払出予定伝票日付"]), `${row["施設名称"]} / ${row["部署名称"]}`,
     state.reissueLabelKeys.has(row["ラベルキー"]) ? "ラベル再発行" : ""
   ];
@@ -1012,16 +1106,26 @@ function bindEvents() {
 
   elements.departmentSelect.addEventListener("change", () => {
     const selected = getEligibleDepartments().find((department) => departmentKey(department) === elements.departmentSelect.value) || null;
-    state.currentDepartment = selected;
     elements.departmentSelect.blur();
-    saveState();
-    renderAll();
-    if (selected) {
-      showResult("idle", "棚卸を開始できます", `${selected.facilityName} / ${selected.departmentName} のSPDラベルを読み取ってください。`);
-      playSuccessSound();
-    } else {
-      showResult("idle", "部署未選択", "棚卸する施設・部署を選択してください。");
-    }
+    selectDepartmentForInventory(selected);
+  });
+
+  elements.overallStatusButton.addEventListener("click", openOverallStatus);
+  elements.overallStatusCloseButton.addEventListener("click", closeOverallStatus);
+  elements.overallStatusDialog.addEventListener("click", (event) => {
+    if (event.target === elements.overallStatusDialog) closeOverallStatus();
+  });
+  elements.overallDepartmentList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-department-key]");
+    if (!button) return;
+    const selected = getEligibleDepartments().find((department) => departmentKey(department) === button.dataset.departmentKey) || null;
+    if (!selected) return;
+    closeOverallStatus();
+    switchSection("checkSection");
+    selectDepartmentForInventory(selected);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !elements.overallStatusDialog.hidden) closeOverallStatus();
   });
 
   elements.manualScanButton.addEventListener("click", () => {
@@ -1051,6 +1155,7 @@ function bindEvents() {
       elements.unreadActionMessage.textContent = enabled ? `ラベルキー ${labelKey} を再発行対象にしました。` : `ラベルキー ${labelKey} の再発行対象を解除しました。`;
       renderUnreadList();
       renderOutputData();
+      renderOverallStatus();
       return;
     }
     if (!confirm(`ラベルキー ${labelKey} を現物確認済として読取済にしますか？`)) return;
@@ -1069,6 +1174,7 @@ function bindEvents() {
     renderCounts();
     renderUnreadList();
     renderOutputData();
+    renderOverallStatus();
   });
 
   [elements.outputFacility, elements.outputDepartment, elements.outputReadStatus]
@@ -1114,7 +1220,7 @@ if (typeof module !== "undefined" && module.exports) {
     REQUIRED_HEADERS, state, normalizeLabelKey, splitTsvRecords, isValidDateKey, parseTsv, buildLabelKey, normalizeQr,
     getExpectedCenterCode, departmentKey, departmentFromRow, rebuildIndexes, findLabel, parseDateInput, validateTargetEndDate,
     isRowOnOrBeforeEndDate, matchesDepartment, getEligibleDepartments, getUniqueLabelRows, getCurrentTargetLabels, getUnreadLabels,
-    getTargetCounts, getOutputTargetLabels, getOutputRecords, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
+    getTargetCounts, getDepartmentProgress, getOverallProgress, getOutputTargetLabels, getOutputRecords, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
     isCompletionTransition, getPrintRowValues, todayInputValue, formatDateForDisplay, formatMasterDate, applyMasterData, saveState, restoreState, createHistoryRecord,
     createOutputRecord, filterOutputRecords, buildOutputCsv
   };

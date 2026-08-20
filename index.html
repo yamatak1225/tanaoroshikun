@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#4b1f66">
+  <meta name="theme-color" content="#145a4e">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="棚卸くん">
@@ -11,7 +11,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
-  <link rel="stylesheet" href="style.css?v=20260820-5">
+  <link rel="stylesheet" href="style.css?v=20260820-6">
 </head>
 <body>
   <header class="app-header">
@@ -31,7 +31,10 @@
       <h2 id="checkHeading" class="visually-hidden">棚卸チェック</h2>
 
       <section class="department-card" aria-labelledby="departmentHeading">
-        <p id="departmentHeading" class="card-label">棚卸対象部署</p>
+        <div class="department-card-heading">
+          <p id="departmentHeading" class="card-label">棚卸対象部署</p>
+          <button id="overallStatusButton" class="button button--secondary overall-status-button" type="button" disabled>全体状況</button>
+        </div>
         <label class="visually-hidden" for="departmentSelect">施設・部署を選択</label>
         <select id="departmentSelect" class="department-select" disabled><option value="">マスターを読み込んでください</option></select>
         <p id="currentFacility" class="facility-name">施設未選択</p>
@@ -121,16 +124,42 @@
     </section>
   </main>
 
-  <section id="printSheet" class="print-sheet" aria-hidden="true">
-    <h1>棚卸くん 未読取一覧</h1>
-    <dl class="print-summary">
-      <div><dt>印刷日時</dt><dd id="printDateTime">―</dd></div><div><dt>対象終了日</dt><dd id="printEndDate">―</dd></div>
-      <div><dt>施設名</dt><dd id="printFacility">―</dd></div><div><dt>部署名</dt><dd id="printDepartment">―</dd></div>
-      <div><dt>件数</dt><dd id="printCounts">―</dd></div>
-    </dl>
-    <table><thead><tr><th>No.</th><th>商品名</th><th>規格</th><th>製品番号</th><th>ラベルキー</th><th>ラベル日付</th><th>施設名 / 部署名</th><th>対応</th></tr></thead><tbody id="printTableBody"></tbody></table>
+  <section id="overallStatusDialog" class="overall-overlay" role="dialog" aria-modal="true" aria-labelledby="overallStatusHeading" hidden>
+    <div class="overall-dialog">
+      <header class="overall-dialog-header">
+        <div><p class="eyebrow">全部署の棚卸進捗</p><h2 id="overallStatusHeading">全体状況</h2></div>
+        <button id="overallStatusCloseButton" class="overall-close-button" type="button" aria-label="全体状況を閉じる">閉じる</button>
+      </header>
+      <p id="overallEndDate" class="overall-end-date">対象終了日：―</p>
+      <div class="overall-summary-grid" aria-label="全部署の合計">
+        <div><span>対象</span><strong id="overallTargetCount">0</strong></div>
+        <div class="overall-summary-read"><span>読取済</span><strong id="overallReadCount">0</strong></div>
+        <div class="overall-summary-unread"><span>未読取</span><strong id="overallUnreadCount">0</strong></div>
+        <div class="overall-summary-complete"><span>完了部署</span><strong id="overallCompletedCount">0 / 0</strong></div>
+      </div>
+      <p class="overall-help">部署を押すと、その部署の棚卸チェックへ移動します。</p>
+      <div id="overallDepartmentList" class="overall-department-list"></div>
+    </div>
   </section>
 
-  <script src="app.js?v=20260820-5"></script>
+  <section id="printSheet" class="print-sheet" aria-hidden="true">
+    <div class="print-header">
+      <div class="print-header-main">
+        <h1>SPD棚卸　未確認ラベルリスト</h1>
+        <dl class="print-summary">
+          <div><dt>施設名</dt><dd id="printFacility">―</dd></div><div><dt>部署名</dt><dd id="printDepartment">―</dd></div>
+          <div><dt>対象終了日</dt><dd id="printEndDate">―</dd></div><div><dt>印刷日時</dt><dd id="printDateTime">―</dd></div>
+          <div class="print-counts"><dt>件数</dt><dd id="printCounts">―</dd></div>
+        </dl>
+      </div>
+      <section class="print-approval" aria-label="部署確認者の確認欄">
+        <h2>部署確認者</h2>
+        <div class="print-stamp-box"><span>印</span></div>
+      </section>
+    </div>
+    <table><thead><tr><th>No.</th><th>商品名</th><th>規格</th><th>商品コード</th><th>製品番号</th><th>ラベルキー</th><th>ラベル日付</th><th>施設名 / 部署名</th><th>対応</th></tr></thead><tbody id="printTableBody"></tbody></table>
+  </section>
+
+  <script src="app.js?v=20260820-6"></script>
 </body>
 </html>
