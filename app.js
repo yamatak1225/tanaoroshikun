@@ -681,7 +681,7 @@ function cacheElements() {
     "refreshUnreadButton", "printPreviewButton", "reissueExtractButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadCountGrid", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadActionMessage", "unreadList",
     "outputEndDate", "outputFacility", "outputDepartment", "outputReadStatus", "outputSearch", "outputCount", "outputList", "exportDataButton", "outputMessage",
     "overallStatusDialog", "overallStatusCloseButton", "overallEndDate", "overallTargetCount", "overallReadCount", "overallUnreadCount", "overallCompletedCount", "overallDepartmentList",
-    "printSheet", "closePrintPreviewButton", "executePrintButton", "printDateTime", "printEndDate", "printFacility", "printDepartment", "printCounts", "printTableBody"
+    "printSheet", "printDateTime", "printEndDate", "printFacility", "printDepartment", "printCounts", "printTableBody"
   ];
   elements = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 }
@@ -1021,7 +1021,6 @@ function renderAll() {
 
 function switchSection(sectionId) {
   if (sectionId !== "unreadSection" && state.reissueFilterActive) state.reissueFilterActive = false;
-  if (sectionId !== "unreadSection" && elements.printSheet.classList.contains("is-previewing")) closePrintPreview(false);
   document.querySelectorAll(".screen").forEach((section) => section.classList.toggle("is-active", section.id === sectionId));
   document.querySelectorAll(".tab-button").forEach((button) => button.classList.toggle("is-active", button.dataset.section === sectionId));
   if (sectionId === "unreadSection") renderUnreadList();
@@ -1098,32 +1097,14 @@ function preparePrintSheet(now = new Date()) {
   elements.printTableBody.replaceChildren();
   unread.forEach((row, index) => {
     const tr = document.createElement("tr");
-    const labels = ["No.", "商品名", "規格", "商品コード", "製品番号", "ラベルキー", "ラベル日付", "施設名 / 部署名", "対応"];
-    getPrintRowValues(row, index).forEach((value, column) => {
+    getPrintRowValues(row, index).forEach((value) => {
       const td = document.createElement("td");
       td.textContent = value;
-      td.dataset.label = labels[column];
       tr.append(td);
     });
     elements.printTableBody.append(tr);
   });
   return true;
-}
-
-function openPrintPreview() {
-  if (!preparePrintSheet()) return false;
-  elements.printSheet.classList.add("is-previewing");
-  elements.printSheet.setAttribute("aria-hidden", "false");
-  document.body.classList.add("has-modal");
-  elements.closePrintPreviewButton.focus();
-  return true;
-}
-
-function closePrintPreview(restoreFocus = true) {
-  elements.printSheet.classList.remove("is-previewing");
-  elements.printSheet.setAttribute("aria-hidden", "true");
-  document.body.classList.remove("has-modal");
-  if (restoreFocus) elements.printPreviewButton.focus();
 }
 
 function bindEvents() {
@@ -1177,8 +1158,7 @@ function bindEvents() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
-    if (elements.printSheet.classList.contains("is-previewing")) closePrintPreview();
-    else if (!elements.overallStatusDialog.hidden) closeOverallStatus();
+    if (!elements.overallStatusDialog.hidden) closeOverallStatus();
   });
 
   elements.manualScanButton.addEventListener("click", () => {
@@ -1193,9 +1173,10 @@ function bindEvents() {
 
   elements.enableAudioButton.addEventListener("click", () => { void unlockAudio(); });
 
-  elements.printPreviewButton.addEventListener("click", openPrintPreview);
-  elements.closePrintPreviewButton.addEventListener("click", () => closePrintPreview());
-  elements.executePrintButton.addEventListener("click", () => { window.print(); });
+  elements.printPreviewButton.addEventListener("click", () => {
+    if (!preparePrintSheet()) return;
+    window.print();
+  });
   elements.reissueExtractButton.addEventListener("click", () => {
     state.reissueFilterActive = !state.reissueFilterActive;
     elements.unreadActionMessage.textContent = state.reissueFilterActive ? "全部署の再発行対象ラベルを表示しています。" : "通常の未読取一覧へ戻りました。";

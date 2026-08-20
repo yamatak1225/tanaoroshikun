@@ -11,7 +11,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
-  <link rel="stylesheet" href="style.css?v=20260820-7">
+  <link rel="stylesheet" href="style.css?v=20260820-8">
 </head>
 <body>
   <header class="app-header">
@@ -142,30 +142,24 @@
     </div>
   </section>
 
-  <section id="printSheet" class="print-sheet" role="dialog" aria-modal="true" aria-label="印刷プレビュー" aria-hidden="true">
-    <div class="print-preview-actions">
-      <button id="closePrintPreviewButton" class="button button--secondary" type="button">プレビューを閉じる</button>
-      <button id="executePrintButton" class="button" type="button">印刷・共有</button>
-    </div>
-    <div class="print-preview-page">
-      <div class="print-header">
-        <div class="print-header-main">
-          <h1>SPD棚卸　未確認ラベルリスト</h1>
-          <dl class="print-summary">
-            <div><dt>施設名</dt><dd id="printFacility">―</dd></div><div><dt>部署名</dt><dd id="printDepartment">―</dd></div>
-            <div><dt>対象終了日</dt><dd id="printEndDate">―</dd></div><div><dt>印刷日時</dt><dd id="printDateTime">―</dd></div>
-            <div class="print-counts"><dt>件数</dt><dd id="printCounts">―</dd></div>
-          </dl>
-        </div>
-        <section class="print-approval" aria-label="部署確認者の確認欄">
-          <h2>部署確認者</h2>
-          <div class="print-stamp-box"><span>印</span></div>
-        </section>
+  <section id="printSheet" class="print-sheet" aria-hidden="true">
+    <div class="print-header">
+      <div class="print-header-main">
+        <h1>SPD棚卸　未確認ラベルリスト</h1>
+        <dl class="print-summary">
+          <div><dt>施設名</dt><dd id="printFacility">―</dd></div><div><dt>部署名</dt><dd id="printDepartment">―</dd></div>
+          <div><dt>対象終了日</dt><dd id="printEndDate">―</dd></div><div><dt>印刷日時</dt><dd id="printDateTime">―</dd></div>
+          <div class="print-counts"><dt>件数</dt><dd id="printCounts">―</dd></div>
+        </dl>
       </div>
-      <table><thead><tr><th>No.</th><th>商品名</th><th>規格</th><th>商品コード</th><th>製品番号</th><th>ラベルキー</th><th>ラベル日付</th><th>施設名 / 部署名</th><th>対応</th></tr></thead><tbody id="printTableBody"></tbody></table>
+      <section class="print-approval" aria-label="部署確認者の確認欄">
+        <h2>部署確認者</h2>
+        <div class="print-stamp-box"><span>印</span></div>
+      </section>
     </div>
+    <table><thead><tr><th>No.</th><th>商品名</th><th>規格</th><th>商品コード</th><th>製品番号</th><th>ラベルキー</th><th>ラベル日付</th><th>施設名 / 部署名</th><th>対応</th></tr></thead><tbody id="printTableBody"></tbody></table>
   </section>
 
-  <script src="app.js?v=20260820-7"></script>
+  <script src="app.js?v=20260820-8"></script>
 </body>
 </html>
