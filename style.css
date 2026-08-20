@@ -2,6 +2,8 @@
   color-scheme: light;
   --navy: #123a63;
   --navy-dark: #092746;
+  --inventory-header: #4b1f66;
+  --inventory-header-light: #7b2f78;
   --blue-soft: #eaf2fb;
   --green: #087443;
   --green-soft: #dff5e8;
@@ -32,7 +34,7 @@ button { touch-action: manipulation; }
   gap: 12px;
   padding: calc(14px + env(safe-area-inset-top)) 16px 14px;
   color: white;
-  background: linear-gradient(135deg, var(--navy-dark), var(--navy));
+  background: linear-gradient(135deg, var(--inventory-header), var(--inventory-header-light));
 }
 .app-header h1, h2, h3, p { margin-top: 0; }
 .app-header h1 { margin-bottom: 0; font-size: clamp(1.35rem, 6vw, 1.85rem); }

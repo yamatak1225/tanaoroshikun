@@ -1,9 +1,9 @@
 "use strict";
 
-const STORAGE_KEYS = { master: "inventory-kun-master-v1", state: "inventory-kun-state-v1" };
+const STORAGE_KEYS = { master: "inventory-kun-master-v2", state: "inventory-kun-state-v2" };
 const HISTORY_DB_NAME = "inventory-kun-history-v1";
 const HISTORY_STORE_NAME = "scanHistory";
-const REQUIRED_HEADERS = ["施設コード", "施設名称", "部署コード", "部署名称", "品名", "製品番号", "ラベルキー", "払出予定伝票日付"];
+const REQUIRED_HEADERS = ["施設コード", "施設名称", "部署コード", "部署名称", "品名", "製品番号", "ラベルキー", "払出予定伝票日付", "エラーメッセージ"];
 const DEPARTMENT_SEPARATOR = "\u001f";
 
 const state = {
@@ -76,6 +76,7 @@ function parseTsv(text) {
 
   const rows = [];
   const errors = [];
+  let errorExcludedCount = 0;
   records.slice(1).forEach((record, recordIndex) => {
     const line = recordIndex + 2;
     if (record.length > headers.length && record.slice(headers.length).some((value) => normalizeValue(value))) {
@@ -84,7 +85,12 @@ function parseTsv(text) {
     }
     const row = {};
     headers.forEach((header, index) => { if (header) row[header] = normalizeValue(record[index]); });
-    const emptyHeaders = REQUIRED_HEADERS.filter((header) => !row[header]);
+    // 在庫差異データ側でエラーになった行は、棚卸対象データへ入れる前に除外する。
+    if (row["エラーメッセージ"] !== "") {
+      errorExcludedCount += 1;
+      return;
+    }
+    const emptyHeaders = REQUIRED_HEADERS.filter((header) => header !== "エラーメッセージ" && !row[header]);
     if (emptyHeaders.length) {
       errors.push(`${line}行目：必須項目が空欄です（${emptyHeaders.join("、")}）。`);
       return;
@@ -99,7 +105,7 @@ function parseTsv(text) {
   });
   if (errors.length) throw new Error(`${errors.slice(0, 5).join("\n")}${errors.length > 5 ? `\nほか${errors.length - 5}件のエラーがあります。` : ""}`);
   if (!rows.length) throw new Error("有効なデータ行がありません。");
-  return { headers, rows };
+  return { headers, rows, errorExcludedCount };
 }
 
 function removeLeadingZeros(value) {
@@ -222,7 +228,7 @@ function getTargetCounts() {
 
 function validateSpdLabel(rawValue) {
   if (!state.masterInfo || !state.masterRows.length) {
-    return { ok: false, code: "NO_MASTER", title: "マスター未読込", message: "先にラベルマスタ.tsvを読み込んでください。" };
+    return { ok: false, code: "NO_MASTER", title: "マスター未読込", message: "先に在庫差異.tsvを読み込んでください。" };
   }
   const endDate = validateTargetEndDate();
   if (!endDate.ok) return { ok: false, code: endDate.code, title: "対象終了日エラー", message: endDate.message };
@@ -519,14 +525,20 @@ function applyMasterData(rows, sourceInfo, now = new Date()) {
   rebuildIndexes();
   const masterSaved = saveMaster();
   saveState();
-  return { masterSaved, rowCount: rows.length };
+  return { masterSaved, rowCount: rows.length, errorExcludedCount: sourceInfo.errorExcludedCount || 0 };
 }
 
 async function importLocalMaster(file) {
   if (!file || !/\.tsv$/i.test(file.name)) throw new Error("拡張子が.tsvのファイルを選択してください。");
   const text = decodeMasterBuffer(await file.arrayBuffer());
   const parsed = parseTsv(text);
-  return applyMasterData(parsed.rows, { fileName: file.name, size: file.size, lastModified: file.lastModified, source: "端末ファイル" });
+  return applyMasterData(parsed.rows, {
+    fileName: file.name,
+    size: file.size,
+    lastModified: file.lastModified,
+    source: "端末ファイル",
+    errorExcludedCount: parsed.errorExcludedCount
+  });
 }
 
 function initAudio() {
@@ -574,7 +586,7 @@ function playAlertSound() { playSound("alert"); }
 function cacheElements() {
   const ids = [
     "masterStatusBadge", "masterSummary", "masterFile", "enableAudioButton", "audioStatus", "importMessage",
-    "masterLoaded", "masterFileName", "masterFacilityName", "masterSource", "masterImportedAt", "masterRowCount", "masterMaxDate",
+    "masterLoaded", "masterFileName", "masterFacilityName", "masterSource", "masterImportedAt", "masterRowCount", "masterErrorExcludedCount", "masterMaxDate",
     "targetEndDate", "periodError", "departmentSelect", "currentFacility", "currentDepartment", "currentDepartmentCode", "targetCount", "readCount", "unreadCount",
     "resultPanel", "modeStatus", "resultTitle", "resultMessage", "resultDetails", "scannerBufferStatus", "manualScanInput", "manualScanButton",
     "refreshUnreadButton", "printPreviewButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadList",
@@ -623,7 +635,7 @@ function renderMaster() {
   elements.masterStatusBadge.className = `status-badge status-badge--${loaded ? "ok" : "ng"}`;
   elements.masterSummary.textContent = loaded
     ? `${state.masterInfo.fileName} ／ ${state.masterInfo.rowCount.toLocaleString("ja-JP")}件 ／ ${state.masterInfo.source} ／ ${formatLocalDateTime(state.masterInfo.importedAt)}`
-    : "ラベルマスタ.tsvを読み込んでください。";
+    : "在庫差異.tsvを読み込んでください。";
   const facilities = [...new Set(state.masterRows.map((row) => row["施設名称"]).filter(Boolean))];
   const maxDate = state.masterRows.reduce((maximum, row) => row["払出予定伝票日付"] > maximum ? row["払出予定伝票日付"] : maximum, "");
   elements.masterLoaded.textContent = loaded ? "読込済み" : "未読込";
@@ -632,6 +644,7 @@ function renderMaster() {
   elements.masterSource.textContent = state.masterInfo?.source || "―";
   elements.masterImportedAt.textContent = formatLocalDateTime(state.masterInfo?.importedAt);
   elements.masterRowCount.textContent = `${state.masterInfo?.rowCount || 0}件`;
+  elements.masterErrorExcludedCount.textContent = `${state.masterInfo?.errorExcludedCount || 0}件`;
   elements.masterMaxDate.textContent = maxDate ? formatMasterDate(maxDate) : "―";
 }
 
@@ -885,7 +898,7 @@ function bindEvents() {
     try {
       const applied = await importLocalMaster(file);
       renderAll();
-      showImportMessage(`${applied.rowCount.toLocaleString("ja-JP")}件を読み込み、棚卸状態をリセットしました。${applied.masterSaved ? "" : " ブラウザ保存容量が不足したため、再起動後は再取込が必要です。"}`, "ok");
+      showImportMessage(`有効取込 ${applied.rowCount.toLocaleString("ja-JP")}件／エラー除外 ${applied.errorExcludedCount.toLocaleString("ja-JP")}件。棚卸状態をリセットしました。${applied.masterSaved ? "" : " ブラウザ保存容量が不足したため、再起動後は再取込が必要です。"}`, "ok");
       showResult("idle", "部署を選択してください", "対象終了日を確認し、棚卸する施設・部署を選択してください。");
     } catch (error) {
       showImportMessage(error.message, "error");

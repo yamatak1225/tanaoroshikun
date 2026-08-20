@@ -1,11 +1,11 @@
 "use strict";
 
-const CACHE_NAME = "inventory-kun-v3";
+const CACHE_NAME = "inventory-kun-v4";
 const APP_ASSETS = [
   "./",
   "./index.html",
-  "./style.css?v=20260820-3",
-  "./app.js?v=20260820-3",
+  "./style.css?v=20260820-4",
+  "./app.js?v=20260820-4",
   "./manifest.webmanifest",
   "./icons/favicon-32.png",
   "./icons/apple-touch-icon.png",
