@@ -4,6 +4,7 @@ const STORAGE_KEYS = { master: "inventory-kun-master-v2", state: "inventory-kun-
 const HISTORY_DB_NAME = "inventory-kun-history-v1";
 const HISTORY_STORE_NAME = "scanHistory";
 const REQUIRED_HEADERS = ["施設コード", "施設名称", "部署コード", "部署名称", "品名", "規格", "製品番号", "ラベルキー", "払出予定伝票日付", "エラーメッセージ"];
+const OPTIONAL_VALUE_HEADERS = new Set(["メーカー", "メーカー名", "品名", "規格", "製品番号"]);
 const DEPARTMENT_SEPARATOR = "\u001f";
 
 const state = {
@@ -94,7 +95,8 @@ function parseTsv(text) {
       errorExcludedCount += 1;
       return;
     }
-    const emptyHeaders = REQUIRED_HEADERS.filter((header) => header !== "エラーメッセージ" && !row[header]);
+    // 列自体は必要でも、業務上空欄を許容する項目は行単位の必須値チェックから除外する。
+    const emptyHeaders = REQUIRED_HEADERS.filter((header) => header !== "エラーメッセージ" && !OPTIONAL_VALUE_HEADERS.has(header) && !row[header]);
     if (emptyHeaders.length) {
       errors.push(`${line}行目：必須項目が空欄です（${emptyHeaders.join("、")}）。`);
       return;
@@ -443,7 +445,7 @@ function createOutputRecord(row) {
   const read = state.readLabelKeys.has(labelKey);
   return {
     productCode: row["商品コード"] || "",
-    manufacturerName: row["メーカー名"] || "",
+    manufacturerName: row["メーカー名"] || row["メーカー"] || "",
     productName: row["品名"] || "",
     specification: row["規格"] || "",
     productNumber: row["製品番号"] || "",
@@ -696,7 +698,7 @@ function resultDetailsFor(result) {
   if (result.labelKey) details.push(["ラベルキー", result.labelKey]);
   if (result.row) {
     details.push(["読取ラベル", `${result.row["施設名称"]} / ${result.row["部署名称"]}`]);
-    details.push(["品名", result.row["品名"]]);
+    details.push(["品名", result.row["品名"] || ""]);
   }
   if (result.selectedDepartment) details.unshift(["現在選択中", `${result.selectedDepartment.facilityName} / ${result.selectedDepartment.departmentName}`]);
   if (result.scannedCenterCode) details.push(["センターコード", `読取 ${result.scannedCenterCode} / 正 ${result.expectedCenterCode}`]);
@@ -867,13 +869,13 @@ function createUnreadItem(row, index, options = {}) {
   const read = state.readLabelKeys.has(labelKey);
   article.className = `unread-item${reissue ? " unread-item--reissue" : ""}`;
   const heading = document.createElement("h3");
-  heading.textContent = `${index + 1}. ${row["品名"]}`;
+  heading.textContent = `${index + 1}. ${row["品名"] || ""}`;
   const specification = document.createElement("p");
   specification.className = "item-specification";
-  specification.textContent = `規格：${row["規格"] || "―"}`;
+  specification.textContent = `規格：${row["規格"] || ""}`;
   const product = document.createElement("p");
   product.className = "item-product";
-  product.textContent = `製品番号：${row["製品番号"] || "―"}`;
+  product.textContent = `製品番号：${row["製品番号"] || ""}`;
   const key = document.createElement("p");
   key.className = "item-key";
   key.textContent = `ラベルキー：${labelKey}`;
@@ -999,7 +1001,7 @@ function renderOutputData() {
     place.textContent = `${record.facilityName || "―"} ／ ${record.departmentName || "―"}`;
     const detail = document.createElement("p");
     detail.className = "item-key";
-    detail.textContent = `製品番号：${record.productNumber || "―"}　ラベル：${record.labelKey || "―"}　日付：${record.labelDate}`;
+    detail.textContent = `製品番号：${record.productNumber || ""}　ラベル：${record.labelKey || "―"}　日付：${record.labelDate}`;
     article.append(heading, title, place, detail);
     elements.outputList.append(article);
   });
@@ -1079,8 +1081,8 @@ async function processScan(rawValue) {
 
 function getPrintRowValues(row, index) {
   return [
-    String(index + 1), `${row["施設名称"]} / ${row["部署名称"]}`, row["商品コード"] || "―", row["品名"], row["規格"] || "―",
-    row["製品番号"] || "―", row["ラベルキー"], formatMasterDate(row["払出予定伝票日付"]),
+    String(index + 1), `${row["施設名称"]} / ${row["部署名称"]}`, row["商品コード"] || "―", row["品名"] || "", row["規格"] || "",
+    row["製品番号"] || "", row["ラベルキー"], formatMasterDate(row["払出予定伝票日付"]),
     state.reissueLabelKeys.has(row["ラベルキー"]) ? "ラベル再発行" : ""
   ];
 }
@@ -1208,7 +1210,7 @@ function bindEvents() {
     void saveScanHistory(createHistoryRecord(result, ""));
     if (isCompletionTransition(beforeCounts, result.counts)) playCompletionSound();
     else playSuccessSound();
-    elements.unreadActionMessage.textContent = `${result.row["品名"]}を手動確認で読取済にしました。未読取 ${result.counts.unread}件`;
+    elements.unreadActionMessage.textContent = `${result.row["品名"] || "対象ラベル"}を手動確認で読取済にしました。未読取 ${result.counts.unread}件`;
     renderCounts();
     renderUnreadList();
     renderOutputData();
@@ -1255,7 +1257,7 @@ if (typeof document !== "undefined") {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    REQUIRED_HEADERS, state, normalizeLabelKey, splitTsvRecords, isValidDateKey, parseTsv, buildLabelKey, normalizeQr,
+    REQUIRED_HEADERS, OPTIONAL_VALUE_HEADERS, state, normalizeLabelKey, splitTsvRecords, isValidDateKey, parseTsv, buildLabelKey, normalizeQr,
     getExpectedCenterCode, departmentKey, departmentFromRow, rebuildIndexes, findLabel, parseDateInput, validateTargetEndDate,
     isRowOnOrBeforeEndDate, matchesDepartment, getEligibleDepartments, getUniqueLabelRows, getCurrentTargetLabels, getUnreadLabels,
     getTargetCounts, getDepartmentProgress, getOverallProgress, getOutputTargetLabels, getReissueTargetLabels, getOutputRecords, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
