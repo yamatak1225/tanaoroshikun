@@ -13,6 +13,7 @@ const state = {
   readLabelKeys: new Set(),
   confirmationMethods: new Map(),
   reissueLabelKeys: new Set(),
+  reissueFilterActive: false,
   targetEndDate: "",
   currentDepartment: null,
   history: [],
@@ -223,6 +224,10 @@ function getUnreadLabels() {
   return getCurrentTargetLabels().filter((row) => !state.readLabelKeys.has(row["ラベルキー"]));
 }
 
+function getReissueTargetLabels() {
+  return getUniqueLabelRows(getOutputTargetLabels()).filter((row) => state.reissueLabelKeys.has(row["ラベルキー"]));
+}
+
 function getOutputTargetLabels() {
   if (!validateTargetEndDate().ok) return [];
   return state.masterRows.filter((row) => isRowOnOrBeforeEndDate(row));
@@ -318,7 +323,7 @@ function confirmUnreadLabel(labelKey) {
 
 function toggleReissueLabel(labelKey) {
   const normalizedKey = normalizeLabelKey(labelKey);
-  if (!getCurrentTargetLabels().some((row) => row["ラベルキー"] === normalizedKey)) return false;
+  if (!getUniqueLabelRows(getOutputTargetLabels()).some((row) => row["ラベルキー"] === normalizedKey)) return false;
   if (state.reissueLabelKeys.has(normalizedKey)) state.reissueLabelKeys.delete(normalizedKey);
   else state.reissueLabelKeys.add(normalizedKey);
   saveState();
@@ -602,6 +607,7 @@ function applyMasterData(rows, sourceInfo, now = new Date()) {
   state.readLabelKeys = new Set();
   state.confirmationMethods = new Map();
   state.reissueLabelKeys = new Set();
+  state.reissueFilterActive = false;
   rebuildIndexes();
   const masterSaved = saveMaster();
   saveState();
@@ -672,10 +678,10 @@ function cacheElements() {
     "masterLoaded", "masterFileName", "masterFacilityName", "masterSource", "masterImportedAt", "masterRowCount", "masterErrorExcludedCount", "masterMaxDate",
     "targetEndDate", "periodError", "departmentSelect", "overallStatusButton", "currentFacility", "currentDepartment", "currentDepartmentCode", "targetCount", "readCount", "unreadCount",
     "resultPanel", "modeStatus", "resultTitle", "resultMessage", "resultDetails", "scannerBufferStatus", "manualScanInput", "manualScanButton",
-    "refreshUnreadButton", "printPreviewButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadActionMessage", "unreadList",
+    "refreshUnreadButton", "printPreviewButton", "reissueExtractButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadCountGrid", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadActionMessage", "unreadList",
     "outputEndDate", "outputFacility", "outputDepartment", "outputReadStatus", "outputSearch", "outputCount", "outputList", "exportDataButton", "outputMessage",
     "overallStatusDialog", "overallStatusCloseButton", "overallEndDate", "overallTargetCount", "overallReadCount", "overallUnreadCount", "overallCompletedCount", "overallDepartmentList",
-    "printSheet", "printDateTime", "printEndDate", "printFacility", "printDepartment", "printCounts", "printTableBody"
+    "printSheet", "closePrintPreviewButton", "executePrintButton", "printDateTime", "printEndDate", "printFacility", "printDepartment", "printCounts", "printTableBody"
   ];
   elements = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 }
@@ -851,12 +857,14 @@ function renderScanner() {
   elements.modeStatus.textContent = ready ? "● SPDラベル待ち" : state.masterRows.length ? "● 部署選択待ち" : "● マスター待ち";
   elements.modeStatus.className = `mode-status ${ready ? "mode-status--spd" : "mode-status--container"}`;
   elements.printPreviewButton.disabled = !state.currentDepartment || !validateTargetEndDate().ok;
+  elements.reissueExtractButton.disabled = !state.masterRows.length || !validateTargetEndDate().ok;
 }
 
-function createUnreadItem(row, index) {
+function createUnreadItem(row, index, options = {}) {
   const article = document.createElement("article");
   const labelKey = row["ラベルキー"];
   const reissue = state.reissueLabelKeys.has(labelKey);
+  const read = state.readLabelKeys.has(labelKey);
   article.className = `unread-item${reissue ? " unread-item--reissue" : ""}`;
   const heading = document.createElement("h3");
   heading.textContent = `${index + 1}. ${row["品名"]}`;
@@ -873,8 +881,11 @@ function createUnreadItem(row, index) {
   labelDate.textContent = `ラベル日付：${formatMasterDate(row["払出予定伝票日付"])}`;
   const department = document.createElement("p");
   department.textContent = `${row["施設名称"]} ／ ${row["部署名称"]}`;
+  const readStatus = document.createElement("p");
+  readStatus.className = `reissue-read-status ${read ? "is-read" : "is-unread"}`;
+  readStatus.textContent = read ? `読取済（${state.confirmationMethods.get(labelKey) || "バーコード"}）` : "未読取";
   const actions = document.createElement("div");
-  actions.className = "unread-actions";
+  actions.className = `unread-actions${options.reissueMode ? " is-single" : ""}`;
   const confirmButton = document.createElement("button");
   confirmButton.type = "button";
   confirmButton.className = "button unread-confirm-button";
@@ -888,15 +899,35 @@ function createUnreadItem(row, index) {
   reissueButton.dataset.labelKey = labelKey;
   reissueButton.setAttribute("aria-pressed", String(reissue));
   reissueButton.textContent = reissue ? "再発行対象" : "再発行";
-  actions.append(confirmButton, reissueButton);
-  article.append(heading, specification, product, key, labelDate, department, actions);
+  if (options.reissueMode) actions.append(reissueButton);
+  else actions.append(confirmButton, reissueButton);
+  article.append(heading, specification, product, key, labelDate, department);
+  if (options.reissueMode) article.append(readStatus);
+  article.append(actions);
   return article;
 }
 
 function renderUnreadList() {
-  const unread = getUnreadLabels();
+  const reissueMode = state.reissueFilterActive;
+  const unread = reissueMode ? getReissueTargetLabels() : getUnreadLabels();
   const counts = getTargetCounts();
   elements.unreadList.replaceChildren();
+  elements.reissueExtractButton.classList.toggle("is-active", reissueMode);
+  elements.reissueExtractButton.setAttribute("aria-pressed", String(reissueMode));
+  elements.reissueExtractButton.textContent = reissueMode ? "再発行ラベル抽出中" : "再発行ラベル抽出";
+  elements.unreadCountGrid.hidden = reissueMode;
+  if (reissueMode) {
+    elements.unreadPeriodLabel.textContent = `再発行ラベル抽出中　対象終了日：${formatDateForDisplay(state.targetEndDate)}まで`;
+    elements.unreadDepartmentLabel.textContent = `対象部署：全部署 ／ 再発行対象 ${unread.length}件`;
+    if (!unread.length) {
+      elements.unreadList.append(createEmptyState("再発行対象のラベルはありません。"));
+      return;
+    }
+    const fragment = document.createDocumentFragment();
+    unread.forEach((row, index) => fragment.append(createUnreadItem(row, index, { reissueMode: true })));
+    elements.unreadList.append(fragment);
+    return;
+  }
   if (!state.currentDepartment) {
     elements.unreadPeriodLabel.textContent = `対象終了日：${formatDateForDisplay(state.targetEndDate)}まで`;
     elements.unreadDepartmentLabel.textContent = "対象部署：指定なし";
@@ -989,6 +1020,8 @@ function renderAll() {
 }
 
 function switchSection(sectionId) {
+  if (sectionId !== "unreadSection" && state.reissueFilterActive) state.reissueFilterActive = false;
+  if (sectionId !== "unreadSection" && elements.printSheet.classList.contains("is-previewing")) closePrintPreview(false);
   document.querySelectorAll(".screen").forEach((section) => section.classList.toggle("is-active", section.id === sectionId));
   document.querySelectorAll(".tab-button").forEach((button) => button.classList.toggle("is-active", button.dataset.section === sectionId));
   if (sectionId === "unreadSection") renderUnreadList();
@@ -1065,14 +1098,32 @@ function preparePrintSheet(now = new Date()) {
   elements.printTableBody.replaceChildren();
   unread.forEach((row, index) => {
     const tr = document.createElement("tr");
-    getPrintRowValues(row, index).forEach((value) => {
+    const labels = ["No.", "商品名", "規格", "商品コード", "製品番号", "ラベルキー", "ラベル日付", "施設名 / 部署名", "対応"];
+    getPrintRowValues(row, index).forEach((value, column) => {
       const td = document.createElement("td");
       td.textContent = value;
+      td.dataset.label = labels[column];
       tr.append(td);
     });
     elements.printTableBody.append(tr);
   });
   return true;
+}
+
+function openPrintPreview() {
+  if (!preparePrintSheet()) return false;
+  elements.printSheet.classList.add("is-previewing");
+  elements.printSheet.setAttribute("aria-hidden", "false");
+  document.body.classList.add("has-modal");
+  elements.closePrintPreviewButton.focus();
+  return true;
+}
+
+function closePrintPreview(restoreFocus = true) {
+  elements.printSheet.classList.remove("is-previewing");
+  elements.printSheet.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("has-modal");
+  if (restoreFocus) elements.printPreviewButton.focus();
 }
 
 function bindEvents() {
@@ -1125,7 +1176,9 @@ function bindEvents() {
     selectDepartmentForInventory(selected);
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !elements.overallStatusDialog.hidden) closeOverallStatus();
+    if (event.key !== "Escape") return;
+    if (elements.printSheet.classList.contains("is-previewing")) closePrintPreview();
+    else if (!elements.overallStatusDialog.hidden) closeOverallStatus();
   });
 
   elements.manualScanButton.addEventListener("click", () => {
@@ -1140,9 +1193,13 @@ function bindEvents() {
 
   elements.enableAudioButton.addEventListener("click", () => { void unlockAudio(); });
 
-  elements.printPreviewButton.addEventListener("click", () => {
-    if (!preparePrintSheet()) return;
-    window.print();
+  elements.printPreviewButton.addEventListener("click", openPrintPreview);
+  elements.closePrintPreviewButton.addEventListener("click", () => closePrintPreview());
+  elements.executePrintButton.addEventListener("click", () => { window.print(); });
+  elements.reissueExtractButton.addEventListener("click", () => {
+    state.reissueFilterActive = !state.reissueFilterActive;
+    elements.unreadActionMessage.textContent = state.reissueFilterActive ? "全部署の再発行対象ラベルを表示しています。" : "通常の未読取一覧へ戻りました。";
+    renderUnreadList();
   });
   elements.refreshUnreadButton.addEventListener("click", () => { renderCounts(); renderUnreadList(); });
 
@@ -1220,7 +1277,7 @@ if (typeof module !== "undefined" && module.exports) {
     REQUIRED_HEADERS, state, normalizeLabelKey, splitTsvRecords, isValidDateKey, parseTsv, buildLabelKey, normalizeQr,
     getExpectedCenterCode, departmentKey, departmentFromRow, rebuildIndexes, findLabel, parseDateInput, validateTargetEndDate,
     isRowOnOrBeforeEndDate, matchesDepartment, getEligibleDepartments, getUniqueLabelRows, getCurrentTargetLabels, getUnreadLabels,
-    getTargetCounts, getDepartmentProgress, getOverallProgress, getOutputTargetLabels, getOutputRecords, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
+    getTargetCounts, getDepartmentProgress, getOverallProgress, getOutputTargetLabels, getReissueTargetLabels, getOutputRecords, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
     isCompletionTransition, getPrintRowValues, todayInputValue, formatDateForDisplay, formatMasterDate, applyMasterData, saveState, restoreState, createHistoryRecord,
     createOutputRecord, filterOutputRecords, buildOutputCsv
   };
