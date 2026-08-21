@@ -157,11 +157,12 @@ input[type="search"], select { width: 100%; min-width: 0; min-height: 42px; padd
 .unread-list { display: grid; gap: 10px; }
 .unread-item { padding: 14px; border: 1px solid var(--line); border-left: 5px solid var(--red); border-radius: 10px; background: #fff; }
 .unread-item--reissue { border-color: #d99a1b; border-left-color: #d98200; background: #fffaf0; }
-.unread-item h3 { margin-bottom: 4px; font-size: 1.05rem; }
+.unread-item h3 { margin-bottom: 4px; font-size: 1.05rem; font-weight: 800; }
 .unread-item p { margin-bottom: 3px; color: var(--muted); }
-.unread-item .item-specification { color: var(--ink); font-weight: 800; }
-.unread-item .item-product { color: var(--ink); font-size: .85rem; font-weight: 800; }
+.unread-item .item-specification,
+.unread-item .item-product { color: var(--ink); font-size: .85rem; font-weight: 400; }
 .unread-item .item-key { color: var(--ink); font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-weight: 800; }
+.unread-item .item-label-date { font-weight: 800; }
 .unread-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-top: 12px; }
 .unread-actions.is-single { grid-template-columns: minmax(0, 1fr); }
 .unread-actions .button { min-height: 48px; padding: 9px 8px; font-weight: 900; }

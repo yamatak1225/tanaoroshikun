@@ -880,6 +880,7 @@ function createUnreadItem(row, index, options = {}) {
   key.className = "item-key";
   key.textContent = `ラベルキー：${labelKey}`;
   const labelDate = document.createElement("p");
+  labelDate.className = "item-label-date";
   labelDate.textContent = `ラベル日付：${formatMasterDate(row["払出予定伝票日付"])}`;
   const department = document.createElement("p");
   department.textContent = `${row["施設名称"]} ／ ${row["部署名称"]}`;
