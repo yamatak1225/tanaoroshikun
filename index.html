@@ -3,15 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#145a4e">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="棚卸くん">
   <title>棚卸くん</title>
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
-  <link rel="stylesheet" href="style.css?v=20260821-12">
+  <link rel="stylesheet" href="style.css?v=20260821-13">
 </head>
 <body>
   <header class="app-header">
@@ -78,7 +72,7 @@
     <section id="unreadSection" class="screen" aria-labelledby="unreadHeading">
       <div class="section-heading-row">
         <div><p class="eyebrow">棚卸が未完了のSPDラベル</p><h2 id="unreadHeading">未読取一覧</h2></div>
-        <div class="section-actions"><button id="refreshUnreadButton" class="button button--secondary" type="button">更新</button><button id="printPreviewButton" class="button button--secondary" type="button" disabled>印刷プレビュー</button><button id="reissueExtractButton" class="button button--secondary reissue-extract-button" type="button" aria-pressed="false" disabled>再発行ラベル抽出</button></div>
+        <div class="section-actions"><button id="printPreviewButton" class="button button--secondary" type="button" disabled>印刷プレビュー</button><button id="reissueExtractButton" class="button button--secondary reissue-extract-button" type="button" aria-pressed="false" disabled>再発行ラベル抽出</button></div>
       </div>
       <div class="filter-summary"><p id="unreadPeriodLabel">対象終了日：―</p><p id="unreadDepartmentLabel">対象部署：指定なし</p></div>
       <div id="unreadCountGrid" class="count-grid">
@@ -144,7 +138,7 @@
 
   <script src="vendor/pdf-lib.min.js"></script>
   <script src="vendor/fontkit.umd.min.js"></script>
-  <script src="pdf-report.js?v=20260821-12"></script>
-  <script src="app.js?v=20260821-12"></script>
+  <script src="pdf-report.js?v=20260821-13"></script>
+  <script src="app.js?v=20260821-13"></script>
 </body>
 </html>

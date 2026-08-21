@@ -681,7 +681,7 @@ function cacheElements() {
     "masterLoaded", "masterFileName", "masterFacilityName", "masterSource", "masterImportedAt", "masterRowCount", "masterErrorExcludedCount", "masterMaxDate",
     "targetEndDate", "periodError", "departmentSelect", "overallStatusButton", "currentFacility", "currentDepartment", "currentDepartmentCode", "targetCount", "readCount", "unreadCount",
     "resultPanel", "modeStatus", "resultTitle", "resultMessage", "resultDetails", "scannerBufferStatus", "manualScanInput", "manualScanButton",
-    "refreshUnreadButton", "printPreviewButton", "reissueExtractButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadCountGrid", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadActionMessage", "unreadList",
+    "printPreviewButton", "reissueExtractButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadCountGrid", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadActionMessage", "unreadList",
     "outputEndDate", "outputFacility", "outputDepartment", "outputReadStatus", "outputSearch", "outputCount", "outputList", "exportDataButton", "outputMessage",
     "overallStatusDialog", "overallStatusCloseButton", "overallEndDate", "overallTargetCount", "overallReadCount", "overallUnreadCount", "overallCompletedCount", "overallDepartmentList"
   ];
@@ -1106,9 +1106,9 @@ function createPdfReportData(now = new Date()) {
 
 function openPdfLoadingWindow(windowRef = window) {
   try {
-    const preview = windowRef.open("", "_blank");
+    // ポップアップ制限を避けるため、利用者のクリック処理内で表示先を先に確保する。
+    const preview = windowRef.open("about:blank", "_blank");
     if (!preview) return null;
-    preview.opener = null;
     preview.document.title = "棚卸くん PDF生成中";
     preview.document.body.textContent = "PDFを生成しています。しばらくお待ちください。";
     return preview;
@@ -1117,15 +1117,37 @@ function openPdfLoadingWindow(windowRef = window) {
   }
 }
 
+function createPdfBlob(pdfBytes, BlobRef = Blob) {
+  if (!pdfBytes?.byteLength) throw new Error("PDFデータが0バイトです。");
+  const pdfBlob = new BlobRef([pdfBytes], { type: "application/pdf" });
+  if (!pdfBlob.size) throw new Error("PDF Blobが0バイトです。");
+  return pdfBlob;
+}
+
+function displayPdfUrl(previewWindow, pdfUrl) {
+  if (!previewWindow || previewWindow.closed) throw new Error("PDF表示用の画面が閉じられています。");
+  if (!pdfUrl) throw new Error("PDF表示用URLがありません。");
+  previewWindow.location.href = pdfUrl;
+  return true;
+}
+
 async function generateAndOpenPdf(previewWindow = null) {
   const report = createPdfReportData();
   if (!report) {
     previewWindow?.close();
+    elements.unreadActionMessage.textContent = "PDFの生成または表示に失敗しました：棚卸する部署を選択してください。";
     return false;
   }
   if (!globalThis.InventoryPdf?.generateInventoryPdf) {
     previewWindow?.close();
-    throw new Error("PDF生成機能を読み込めません。PWAを再起動してください。");
+    elements.unreadActionMessage.textContent = "PDFの生成または表示に失敗しました：PDF生成機能を読み込めません。画面を再読み込みしてください。";
+    playAlertSound();
+    return false;
+  }
+  if (!previewWindow || previewWindow.closed) {
+    elements.unreadActionMessage.textContent = "PDFの生成または表示に失敗しました：PDF表示用の画面を開けません。ブラウザのポップアップ設定を確認してください。";
+    playAlertSound();
+    return false;
   }
   const originalLabel = elements.printPreviewButton.textContent;
   elements.printPreviewButton.disabled = true;
@@ -1135,17 +1157,17 @@ async function generateAndOpenPdf(previewWindow = null) {
     const result = await globalThis.InventoryPdf.generateInventoryPdf(report, {
       fontUrl: new URL("./vendor/NotoSansCJKjp-Regular.ttf", document.baseURI).href
     });
-    const pdfFile = new File([result.bytes], result.fileName, { type: "application/pdf" });
-    const pdfUrl = URL.createObjectURL(pdfFile);
+    const pdfBlob = createPdfBlob(result.bytes);
+    const pdfUrl = URL.createObjectURL(pdfBlob);
+    if (!pdfUrl) throw new Error("PDF表示用URLを生成できません。");
     if (activePdfUrl) URL.revokeObjectURL(activePdfUrl);
     activePdfUrl = pdfUrl;
     elements.unreadActionMessage.textContent = `${result.pageCount}ページのPDFを生成しました。PDFの共有メニューから印刷できます。`;
-    if (previewWindow && !previewWindow.closed) previewWindow.location.replace(pdfUrl);
-    else window.location.assign(pdfUrl);
+    displayPdfUrl(previewWindow, pdfUrl);
     return true;
   } catch (error) {
-    previewWindow?.close();
-    elements.unreadActionMessage.textContent = `PDFを生成できません：${error.message}`;
+    if (previewWindow && !previewWindow.closed) previewWindow.close();
+    elements.unreadActionMessage.textContent = `PDFの生成または表示に失敗しました：${error.message}`;
     playAlertSound();
     return false;
   } finally {
@@ -1220,7 +1242,9 @@ function bindEvents() {
 
   elements.enableAudioButton.addEventListener("click", () => { void unlockAudio(); });
 
-  elements.printPreviewButton.addEventListener("click", () => {
+  elements.printPreviewButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
     const previewWindow = openPdfLoadingWindow();
     void generateAndOpenPdf(previewWindow);
   });
@@ -1229,8 +1253,6 @@ function bindEvents() {
     elements.unreadActionMessage.textContent = state.reissueFilterActive ? "全部署の再発行対象ラベルを表示しています。" : "通常の未読取一覧へ戻りました。";
     renderUnreadList();
   });
-  elements.refreshUnreadButton.addEventListener("click", () => { renderCounts(); renderUnreadList(); });
-
   elements.unreadList.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action][data-label-key]");
     if (!button) return;
@@ -1289,15 +1311,28 @@ async function init() {
   document.body.dataset.appReady = "true";
 }
 
-function registerServiceWorker() {
-  if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
-    window.addEventListener("load", () => navigator.serviceWorker.register("./service-worker.js").catch((error) => console.error("オフライン機能を登録できません。", error)));
+async function removeLegacyPwaArtifacts() {
+  // 過去版を利用した端末だけを対象に、旧Service Workerと棚卸くんの旧キャッシュを解除する。
+  try {
+    if ("serviceWorker" in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      const appScope = new URL("./", document.baseURI).href;
+      await Promise.all(registrations.filter((registration) => registration.scope === appScope).map((registration) => registration.unregister()));
+    }
+    if ("caches" in globalThis) {
+      const cacheNames = await caches.keys();
+      await Promise.all(cacheNames.filter((name) => name.startsWith("inventory-kun-")).map((name) => caches.delete(name)));
+    }
+  } catch {
+    // 旧PWA資材の解除に失敗しても通常Webアプリの業務処理は継続する。
   }
 }
 
 if (typeof document !== "undefined") {
-  document.addEventListener("DOMContentLoaded", () => { void init(); });
-  registerServiceWorker();
+  document.addEventListener("DOMContentLoaded", () => {
+    void removeLegacyPwaArtifacts();
+    void init();
+  });
 }
 
 if (typeof module !== "undefined" && module.exports) {
@@ -1307,6 +1342,6 @@ if (typeof module !== "undefined" && module.exports) {
     isRowOnOrBeforeEndDate, matchesDepartment, getEligibleDepartments, getUniqueLabelRows, getCurrentTargetLabels, getUnreadLabels,
     getTargetCounts, getDepartmentProgress, getOverallProgress, getOutputTargetLabels, getReissueTargetLabels, getOutputRecords, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
     isCompletionTransition, getPrintRowValues, createPdfReportData, todayInputValue, formatDateForDisplay, formatMasterDate, applyMasterData, saveState, restoreState, createHistoryRecord,
-    createOutputRecord, filterOutputRecords, buildOutputCsv
+    createOutputRecord, filterOutputRecords, buildOutputCsv, openPdfLoadingWindow, createPdfBlob, displayPdfUrl, removeLegacyPwaArtifacts
   };
 }
