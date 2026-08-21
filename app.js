@@ -6,7 +6,6 @@ const HISTORY_STORE_NAME = "scanHistory";
 const REQUIRED_HEADERS = ["施設コード", "施設名称", "部署コード", "部署名称", "品名", "規格", "製品番号", "ラベルキー", "払出予定伝票日付", "エラーメッセージ"];
 const OPTIONAL_VALUE_HEADERS = new Set(["メーカー", "メーカー名", "品名", "規格", "製品番号"]);
 const PRINT_COLUMN_HEADERS = ["No.", "施設名 / 部署名", "商品コード", "商品名", "規格", "製品番号", "ラベルキー", "ラベル日付", "対応"];
-const PRINT_ESTIMATED_CHARS_PER_LINE = [4, 22, 14, 22, 16, 13, 13, 11, 9];
 const DEPARTMENT_SEPARATOR = "\u001f";
 
 const state = {
@@ -29,6 +28,7 @@ let successSound = null;
 let alertSound = null;
 let completionSound = null;
 let historyDbPromise = null;
+let activePdfUrl = "";
 
 function normalizeHeader(value) { return String(value ?? "").replace(/^\uFEFF/, "").trim(); }
 function normalizeValue(value) { return String(value ?? "").trim(); }
@@ -338,8 +338,7 @@ function isCompletionTransition(beforeCounts, afterCounts) {
   return Boolean(beforeCounts?.unread > 0 && afterCounts?.target > 0 && afterCounts.unread === 0);
 }
 
-function todayInputValue() {
-  const now = new Date();
+function todayInputValue(now = new Date()) {
   return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 
@@ -606,7 +605,7 @@ function applyMasterData(rows, sourceInfo, now = new Date()) {
     rowCount: rows.length,
     fingerprint: createFingerprint(sourceInfo.fileName, sourceInfo.size, sourceInfo.lastModified, rows)
   };
-  state.targetEndDate = todayInputValue();
+  state.targetEndDate = todayInputValue(now);
   state.currentDepartment = null;
   state.readLabelKeys = new Set();
   state.confirmationMethods = new Map();
@@ -684,8 +683,7 @@ function cacheElements() {
     "resultPanel", "modeStatus", "resultTitle", "resultMessage", "resultDetails", "scannerBufferStatus", "manualScanInput", "manualScanButton",
     "refreshUnreadButton", "printPreviewButton", "reissueExtractButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadCountGrid", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadActionMessage", "unreadList",
     "outputEndDate", "outputFacility", "outputDepartment", "outputReadStatus", "outputSearch", "outputCount", "outputList", "exportDataButton", "outputMessage",
-    "overallStatusDialog", "overallStatusCloseButton", "overallEndDate", "overallTargetCount", "overallReadCount", "overallUnreadCount", "overallCompletedCount", "overallDepartmentList",
-    "printSheet", "printFirstPage", "printDateTime", "printEndDate", "printFacility", "printDepartment", "printCounts", "printTableBody"
+    "overallStatusDialog", "overallStatusCloseButton", "overallEndDate", "overallTargetCount", "overallReadCount", "overallUnreadCount", "overallCompletedCount", "overallDepartmentList"
   ];
   elements = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 }
@@ -1089,111 +1087,71 @@ function getPrintRowValues(row, index) {
   ];
 }
 
-function appendPrintRows(tbody, rowValues, documentRef = document) {
-  rowValues.forEach((values) => {
-    const tr = documentRef.createElement("tr");
-    values.forEach((value) => {
-      const td = documentRef.createElement("td");
-      td.textContent = value;
-      tr.append(td);
-    });
-    tbody.append(tr);
-  });
+function createPdfReportData(now = new Date()) {
+  if (!state.currentDepartment) return null;
+  const counts = getTargetCounts();
+  const unread = getUnreadLabels();
+  return {
+    title: "SPD棚卸　未確認ラベルリスト",
+    facilityName: state.currentDepartment.facilityName,
+    departmentName: state.currentDepartment.departmentName,
+    endDate: `${formatDateForDisplay(state.targetEndDate)} まで`,
+    printedAt: formatLocalDateTime(now),
+    countSummary: `対象 ${counts.target}件　読取済 ${counts.read}件　未読取 ${counts.unread}件`,
+    fileDate: todayInputValue().replaceAll("-", ""),
+    headers: PRINT_COLUMN_HEADERS,
+    rows: unread.map(getPrintRowValues)
+  };
 }
 
-function createPrintTable(rowValues, documentRef = document) {
-  const table = documentRef.createElement("table");
-  const thead = documentRef.createElement("thead");
-  const headerRow = documentRef.createElement("tr");
-  PRINT_COLUMN_HEADERS.forEach((label) => {
-    const th = documentRef.createElement("th");
-    th.textContent = label;
-    headerRow.append(th);
-  });
-  thead.append(headerRow);
-  const tbody = documentRef.createElement("tbody");
-  appendPrintRows(tbody, rowValues, documentRef);
-  table.append(thead, tbody);
-  return table;
-}
-
-function splitPrintRowsByHeight(rowValues, rowHeights, firstPageCapacity, followingPageCapacity) {
-  if (!rowValues.length) return [[]];
-  const pages = [[]];
-  let usedHeight = 0;
-  rowValues.forEach((values, index) => {
-    const measuredHeight = Number(rowHeights[index]);
-    const rowHeight = Number.isFinite(measuredHeight) && measuredHeight > 0 ? measuredHeight : 1;
-    const capacity = pages.length === 1 ? firstPageCapacity : followingPageCapacity;
-    if (pages.at(-1).length && usedHeight + rowHeight > capacity) {
-      pages.push([]);
-      usedHeight = 0;
-    }
-    pages.at(-1).push(values);
-    usedHeight += rowHeight;
-  });
-  return pages;
-}
-
-function estimatePrintRowHeight(values) {
-  const lines = Math.max(...values.map((value, index) => Math.max(1, Math.ceil(String(value ?? "").length / PRINT_ESTIMATED_CHARS_PER_LINE[index]))));
-  return 13 + lines * 11;
-}
-
-function measurePrintPagination(rowValues, documentRef = document) {
-  const measure = documentRef.createElement("div");
-  measure.className = "print-sheet print-measure";
-  measure.setAttribute("aria-hidden", "true");
-  const pageHeightProbe = documentRef.createElement("div");
-  pageHeightProbe.className = "print-page-height-probe";
-  const safetyProbe = documentRef.createElement("div");
-  safetyProbe.className = "print-page-safety-probe";
-  const header = elements.printFirstPage.querySelector(".print-header").cloneNode(true);
-  header.querySelectorAll("[id]").forEach((node) => node.removeAttribute("id"));
-  const table = createPrintTable(rowValues, documentRef);
-  measure.append(pageHeightProbe, safetyProbe, header, table);
-  documentRef.body.append(measure);
+function openPdfLoadingWindow(windowRef = window) {
   try {
-    const pageHeight = pageHeightProbe.getBoundingClientRect().height || 190 / 25.4 * 96;
-    const safetyHeight = safetyProbe.getBoundingClientRect().height || 3 / 25.4 * 96;
-    const headerStyle = getComputedStyle(header);
-    const headerHeight = header.getBoundingClientRect().height
-      + (Number.parseFloat(headerStyle.marginTop) || 0)
-      + (Number.parseFloat(headerStyle.marginBottom) || 0);
-    const tableHeaderHeight = table.tHead?.getBoundingClientRect().height || 24;
-    const rowHeights = [...table.tBodies[0].rows].map((row, index) => row.getBoundingClientRect().height || estimatePrintRowHeight(rowValues[index]));
-    return {
-      rowHeights,
-      firstPageCapacity: Math.max(1, pageHeight - headerHeight - tableHeaderHeight - safetyHeight),
-      followingPageCapacity: Math.max(1, pageHeight - tableHeaderHeight - safetyHeight)
-    };
-  } finally {
-    measure.remove();
+    const preview = windowRef.open("", "_blank");
+    if (!preview) return null;
+    preview.opener = null;
+    preview.document.title = "棚卸くん PDF生成中";
+    preview.document.body.textContent = "PDFを生成しています。しばらくお待ちください。";
+    return preview;
+  } catch {
+    return null;
   }
 }
 
-function preparePrintSheet(now = new Date()) {
-  if (!state.currentDepartment) return false;
-  const counts = getTargetCounts();
-  const unread = getUnreadLabels();
-  elements.printDateTime.textContent = formatLocalDateTime(now);
-  elements.printEndDate.textContent = `${formatDateForDisplay(state.targetEndDate)} まで`;
-  elements.printFacility.textContent = state.currentDepartment.facilityName;
-  elements.printDepartment.textContent = state.currentDepartment.departmentName;
-  elements.printCounts.textContent = `対象 ${counts.target}件　読取済 ${counts.read}件　未読取 ${counts.unread}件`;
-  elements.printSheet.querySelectorAll(".print-page--additional").forEach((page) => page.remove());
-  const rowValues = unread.map(getPrintRowValues);
-  const pagination = measurePrintPagination(rowValues);
-  const pages = splitPrintRowsByHeight(rowValues, pagination.rowHeights, pagination.firstPageCapacity, pagination.followingPageCapacity);
-  elements.printTableBody.replaceChildren();
-  appendPrintRows(elements.printTableBody, pages[0]);
-  pages.slice(1).forEach((pageRows) => {
-    const page = document.createElement("div");
-    page.className = "print-page print-page--additional";
-    page.append(createPrintTable(pageRows));
-    elements.printSheet.append(page);
-  });
-  return true;
+async function generateAndOpenPdf(previewWindow = null) {
+  const report = createPdfReportData();
+  if (!report) {
+    previewWindow?.close();
+    return false;
+  }
+  if (!globalThis.InventoryPdf?.generateInventoryPdf) {
+    previewWindow?.close();
+    throw new Error("PDF生成機能を読み込めません。PWAを再起動してください。");
+  }
+  const originalLabel = elements.printPreviewButton.textContent;
+  elements.printPreviewButton.disabled = true;
+  elements.printPreviewButton.textContent = "PDF生成中…";
+  elements.unreadActionMessage.textContent = "A4横向きPDFを端末内で生成しています。";
+  try {
+    const result = await globalThis.InventoryPdf.generateInventoryPdf(report, {
+      fontUrl: new URL("./vendor/NotoSansCJKjp-Regular.ttf", document.baseURI).href
+    });
+    const pdfFile = new File([result.bytes], result.fileName, { type: "application/pdf" });
+    const pdfUrl = URL.createObjectURL(pdfFile);
+    if (activePdfUrl) URL.revokeObjectURL(activePdfUrl);
+    activePdfUrl = pdfUrl;
+    elements.unreadActionMessage.textContent = `${result.pageCount}ページのPDFを生成しました。PDFの共有メニューから印刷できます。`;
+    if (previewWindow && !previewWindow.closed) previewWindow.location.replace(pdfUrl);
+    else window.location.assign(pdfUrl);
+    return true;
+  } catch (error) {
+    previewWindow?.close();
+    elements.unreadActionMessage.textContent = `PDFを生成できません：${error.message}`;
+    playAlertSound();
+    return false;
+  } finally {
+    elements.printPreviewButton.textContent = originalLabel;
+    elements.printPreviewButton.disabled = !state.currentDepartment || !validateTargetEndDate().ok;
+  }
 }
 
 function bindEvents() {
@@ -1263,8 +1221,8 @@ function bindEvents() {
   elements.enableAudioButton.addEventListener("click", () => { void unlockAudio(); });
 
   elements.printPreviewButton.addEventListener("click", () => {
-    if (!preparePrintSheet()) return;
-    window.print();
+    const previewWindow = openPdfLoadingWindow();
+    void generateAndOpenPdf(previewWindow);
   });
   elements.reissueExtractButton.addEventListener("click", () => {
     state.reissueFilterActive = !state.reissueFilterActive;
@@ -1348,7 +1306,7 @@ if (typeof module !== "undefined" && module.exports) {
     getExpectedCenterCode, departmentKey, departmentFromRow, rebuildIndexes, findLabel, parseDateInput, validateTargetEndDate,
     isRowOnOrBeforeEndDate, matchesDepartment, getEligibleDepartments, getUniqueLabelRows, getCurrentTargetLabels, getUnreadLabels,
     getTargetCounts, getDepartmentProgress, getOverallProgress, getOutputTargetLabels, getReissueTargetLabels, getOutputRecords, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
-    isCompletionTransition, getPrintRowValues, splitPrintRowsByHeight, todayInputValue, formatDateForDisplay, formatMasterDate, applyMasterData, saveState, restoreState, createHistoryRecord,
+    isCompletionTransition, getPrintRowValues, createPdfReportData, todayInputValue, formatDateForDisplay, formatMasterDate, applyMasterData, saveState, restoreState, createHistoryRecord,
     createOutputRecord, filterOutputRecords, buildOutputCsv
   };
 }
