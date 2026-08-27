@@ -29,6 +29,7 @@ let alertSound = null;
 let completionSound = null;
 let historyDbPromise = null;
 let activePdfUrl = "";
+let pendingResetFacility = null;
 
 function normalizeHeader(value) { return String(value ?? "").replace(/^\uFEFF/, "").trim(); }
 function normalizeValue(value) { return String(value ?? "").trim(); }
@@ -158,6 +159,18 @@ function departmentFromRow(row) {
   };
 }
 
+function facilityKey(facility) {
+  if (!facility) return "";
+  return [facility.facilityCode, facility.facilityName].join(DEPARTMENT_SEPARATOR);
+}
+
+function facilityFromRow(row) {
+  return {
+    facilityCode: row["施設コード"],
+    facilityName: row["施設名称"]
+  };
+}
+
 function rebuildIndexes() {
   state.labelIndex = new Map();
   state.masterRows.forEach((row) => {
@@ -235,6 +248,16 @@ function getReissueTargetLabels() {
 function getOutputTargetLabels() {
   if (!validateTargetEndDate().ok) return [];
   return state.masterRows.filter((row) => isRowOnOrBeforeEndDate(row));
+}
+
+function getResetFacilities(rows = getOutputTargetLabels()) {
+  const facilities = new Map();
+  rows.forEach((row) => {
+    const facility = facilityFromRow(row);
+    const key = facilityKey(facility);
+    if (!facilities.has(key)) facilities.set(key, facility);
+  });
+  return [...facilities.values()].sort((left, right) => left.facilityName.localeCompare(right.facilityName, "ja"));
 }
 
 function getTargetCounts() {
@@ -336,6 +359,44 @@ function toggleReissueLabel(labelKey) {
 
 function isCompletionTransition(beforeCounts, afterCounts) {
   return Boolean(beforeCounts?.unread > 0 && afterCounts?.target > 0 && afterCounts.unread === 0);
+}
+
+function resetInventoryForFacility(facility) {
+  const normalizedFacility = {
+    facilityCode: normalizeValue(facility?.facilityCode),
+    facilityName: normalizeValue(facility?.facilityName)
+  };
+  if (!normalizedFacility.facilityCode || !normalizedFacility.facilityName) {
+    return { ok: false, message: "リセット対象施設を選択してください。" };
+  }
+  const currentTargets = getOutputTargetLabels();
+  const facilityRows = currentTargets.filter((row) => row["施設コード"] === normalizedFacility.facilityCode && row["施設名称"] === normalizedFacility.facilityName);
+  const targetKeys = new Set(facilityRows.map((row) => row["ラベルキー"]));
+  if (!targetKeys.size) return { ok: false, message: "選択した施設には現在の棚卸対象ラベルがありません。" };
+
+  // 状態は既存仕様どおりラベルキー単位のため、施設間で重複するキーは他施設保護を優先して停止する。
+  const sharedKeys = [...targetKeys].filter((labelKey) => currentTargets.some((row) => row["ラベルキー"] === labelKey
+    && (row["施設コード"] !== normalizedFacility.facilityCode || row["施設名称"] !== normalizedFacility.facilityName)));
+  if (sharedKeys.length) {
+    return { ok: false, message: `複数施設で同じラベルキーが使用されています。安全のためリセットできません：${sharedKeys.slice(0, 3).join("、")}` };
+  }
+
+  let readResetCount = 0;
+  let reissueResetCount = 0;
+  targetKeys.forEach((labelKey) => {
+    if (state.readLabelKeys.delete(labelKey)) readResetCount += 1;
+    state.confirmationMethods.delete(labelKey);
+    if (state.reissueLabelKeys.delete(labelKey)) reissueResetCount += 1;
+  });
+  state.reissueFilterActive = false;
+  saveState();
+  return {
+    ok: true,
+    facility: normalizedFacility,
+    targetCount: targetKeys.size,
+    readResetCount,
+    reissueResetCount
+  };
 }
 
 function todayInputValue(now = new Date()) {
@@ -554,6 +615,17 @@ function saveState() {
   }
 }
 
+function reconcileInventoryState(validLabelKeys) {
+  const validKeys = validLabelKeys instanceof Set ? validLabelKeys : new Set(validLabelKeys || []);
+  const retainedReadKeys = [...state.readLabelKeys].filter((labelKey) => validKeys.has(labelKey));
+  state.readLabelKeys = new Set(retainedReadKeys);
+  state.confirmationMethods = new Map(retainedReadKeys.map((labelKey) => [
+    labelKey,
+    state.confirmationMethods.get(labelKey) || "バーコード"
+  ]));
+  state.reissueLabelKeys = new Set([...state.reissueLabelKeys].filter((labelKey) => validKeys.has(labelKey)));
+}
+
 function restoreState() {
   state.targetEndDate = todayInputValue();
   if (typeof localStorage === "undefined") return;
@@ -584,8 +656,10 @@ function restoreState() {
   } catch (error) {
     console.error("保存済み棚卸状態を読み込めません。", error);
   }
-  if (state.currentDepartment && !getEligibleDepartments().some((department) => departmentKey(department) === departmentKey(state.currentDepartment))) {
-    state.currentDepartment = null;
+  reconcileInventoryState(new Set(state.masterRows.map((row) => row["ラベルキー"])));
+  if (state.currentDepartment) {
+    state.currentDepartment = getEligibleDepartments().find((department) => department.facilityCode === state.currentDepartment.facilityCode
+      && department.departmentCode === state.currentDepartment.departmentCode) || null;
   }
 }
 
@@ -598,6 +672,14 @@ function decodeMasterBuffer(arrayBuffer) {
 }
 
 function applyMasterData(rows, sourceInfo, now = new Date()) {
+  const previousLabelKeys = new Set(state.masterRows.map((row) => row["ラベルキー"]));
+  const previousDepartment = state.currentDepartment ? { ...state.currentDepartment } : null;
+  const previousReadKeys = new Set(state.readLabelKeys);
+  const previousConfirmationMethods = new Map(state.confirmationMethods);
+  const previousReissueKeys = new Set(state.reissueLabelKeys);
+  const previousTargetEndDate = validateTargetEndDate().ok ? state.targetEndDate : todayInputValue(now);
+  const currentLabelKeys = new Set(rows.map((row) => row["ラベルキー"]));
+
   state.masterRows = rows;
   state.masterInfo = {
     ...sourceInfo,
@@ -605,16 +687,33 @@ function applyMasterData(rows, sourceInfo, now = new Date()) {
     rowCount: rows.length,
     fingerprint: createFingerprint(sourceInfo.fileName, sourceInfo.size, sourceInfo.lastModified, rows)
   };
-  state.targetEndDate = todayInputValue(now);
-  state.currentDepartment = null;
-  state.readLabelKeys = new Set();
-  state.confirmationMethods = new Map();
-  state.reissueLabelKeys = new Set();
+  state.targetEndDate = previousTargetEndDate;
+  state.readLabelKeys = previousReadKeys;
+  state.confirmationMethods = previousConfirmationMethods;
+  state.reissueLabelKeys = previousReissueKeys;
+  reconcileInventoryState(currentLabelKeys);
   state.reissueFilterActive = false;
   rebuildIndexes();
+  const eligibleDepartments = getEligibleDepartments();
+  state.currentDepartment = previousDepartment
+    ? eligibleDepartments.find((department) => department.facilityCode === previousDepartment.facilityCode
+      && department.departmentCode === previousDepartment.departmentCode) || null
+    : null;
   const masterSaved = saveMaster();
   saveState();
-  return { masterSaved, rowCount: rows.length, errorExcludedCount: sourceInfo.errorExcludedCount || 0 };
+  return {
+    masterSaved,
+    rowCount: rows.length,
+    errorExcludedCount: sourceInfo.errorExcludedCount || 0,
+    addedLabelCount: [...currentLabelKeys].filter((labelKey) => !previousLabelKeys.has(labelKey)).length,
+    removedLabelCount: [...previousLabelKeys].filter((labelKey) => !currentLabelKeys.has(labelKey)).length,
+    retainedReadCount: state.readLabelKeys.size,
+    retainedManualCount: [...state.confirmationMethods.values()].filter((method) => method === "手動確認").length,
+    retainedReissueCount: state.reissueLabelKeys.size,
+    departmentPreserved: Boolean(previousDepartment && state.currentDepartment),
+    departmentCleared: Boolean(previousDepartment && !state.currentDepartment),
+    previousDepartment
+  };
 }
 
 async function importLocalMaster(file) {
@@ -679,6 +778,7 @@ function cacheElements() {
   const ids = [
     "masterStatusBadge", "masterSummary", "masterFile", "enableAudioButton", "audioStatus", "importMessage",
     "masterLoaded", "masterFileName", "masterFacilityName", "masterSource", "masterImportedAt", "masterRowCount", "masterErrorExcludedCount", "masterMaxDate",
+    "resetFacilitySelect", "resetInventoryButton", "resetInventoryMessage", "resetConfirmDialog", "resetConfirmMessage", "cancelResetButton", "executeResetButton",
     "targetEndDate", "periodError", "departmentSelect", "overallStatusButton", "currentFacility", "currentDepartment", "currentDepartmentCode", "targetCount", "readCount", "unreadCount",
     "resultPanel", "modeStatus", "resultTitle", "resultMessage", "resultDetails", "scannerBufferStatus", "manualScanInput", "manualScanButton",
     "printPreviewButton", "reissueExtractButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadCountGrid", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadActionMessage", "unreadList",
@@ -738,6 +838,77 @@ function renderMaster() {
   elements.masterRowCount.textContent = `${state.masterInfo?.rowCount || 0}件`;
   elements.masterErrorExcludedCount.textContent = `${state.masterInfo?.errorExcludedCount || 0}件`;
   elements.masterMaxDate.textContent = maxDate ? formatMasterDate(maxDate) : "―";
+}
+
+function renderResetFacilities() {
+  const previous = elements.resetFacilitySelect.value;
+  const facilities = getResetFacilities();
+  elements.resetFacilitySelect.replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = state.masterRows.length
+    ? (facilities.length ? "リセットする施設を選択してください" : "対象終了日以前の施設がありません")
+    : "マスターを読み込んでください";
+  elements.resetFacilitySelect.append(placeholder);
+  const duplicatedNames = new Set(facilities.filter((facility, index) => facilities.findIndex((candidate) => candidate.facilityName === facility.facilityName) !== index).map((facility) => facility.facilityName));
+  facilities.forEach((facility) => {
+    const option = document.createElement("option");
+    option.value = facilityKey(facility);
+    option.textContent = duplicatedNames.has(facility.facilityName) ? `${facility.facilityName}（${facility.facilityCode}）` : facility.facilityName;
+    elements.resetFacilitySelect.append(option);
+  });
+  elements.resetFacilitySelect.disabled = !facilities.length;
+  if (previous && facilities.some((facility) => facilityKey(facility) === previous)) elements.resetFacilitySelect.value = previous;
+  elements.resetInventoryButton.disabled = !elements.resetFacilitySelect.value;
+}
+
+function selectedResetFacility() {
+  return getResetFacilities().find((facility) => facilityKey(facility) === elements.resetFacilitySelect.value) || null;
+}
+
+function closeResetConfirmDialog() {
+  pendingResetFacility = null;
+  if (elements.resetConfirmDialog.open) elements.resetConfirmDialog.close();
+  elements.resetInventoryButton.focus();
+}
+
+function openResetConfirmDialog() {
+  const facility = selectedResetFacility();
+  if (!facility) {
+    elements.resetInventoryMessage.textContent = "リセット対象施設を選択してください。";
+    return;
+  }
+  pendingResetFacility = facility;
+  elements.resetConfirmMessage.textContent = `${facility.facilityName}の棚卸情報をすべてリセットします。読取済・手動確認・再発行状態が削除されます。よろしいですか？`;
+  if (typeof elements.resetConfirmDialog.showModal === "function") {
+    elements.resetConfirmDialog.showModal();
+    elements.cancelResetButton.focus();
+    return;
+  }
+  if (confirm(elements.resetConfirmMessage.textContent)) executeFacilityReset();
+  else pendingResetFacility = null;
+}
+
+function executeFacilityReset() {
+  const facility = pendingResetFacility;
+  if (!facility) return;
+  const result = resetInventoryForFacility(facility);
+  pendingResetFacility = null;
+  if (elements.resetConfirmDialog.open) elements.resetConfirmDialog.close();
+  if (!result.ok) {
+    elements.resetInventoryMessage.textContent = result.message;
+    playAlertSound();
+    return;
+  }
+  renderAll();
+  elements.resetFacilitySelect.value = facilityKey(result.facility);
+  elements.resetInventoryButton.disabled = false;
+  elements.resetInventoryMessage.textContent = `${result.facility.facilityName}の棚卸情報をリセットしました。`;
+  if (state.currentDepartment?.facilityCode === result.facility.facilityCode && state.currentDepartment?.facilityName === result.facility.facilityName) {
+    const counts = getTargetCounts();
+    showResult("idle", "棚卸情報をリセットしました", `${result.facility.facilityName}の棚卸を最初から開始できます。未読取 ${counts.unread}件`);
+  }
+  elements.resetInventoryButton.focus();
 }
 
 function renderDepartmentOptions() {
@@ -1013,6 +1184,7 @@ function renderAll() {
   const period = validateTargetEndDate();
   elements.periodError.textContent = period.ok ? "" : period.message;
   renderMaster();
+  renderResetFacilities();
   renderDepartmentOptions();
   renderDepartment();
   renderCounts();
@@ -1036,7 +1208,7 @@ function handleGlobalKeydown(event) {
   const ignored = [
     elements.manualScanInput, elements.targetEndDate, elements.masterFile,
     elements.outputSearch, elements.outputFacility, elements.outputDepartment, elements.outputReadStatus,
-    elements.departmentSelect
+    elements.departmentSelect, elements.resetFacilitySelect
   ];
   if (ignored.includes(event.target) || event.ctrlKey || event.metaKey || event.altKey) return;
   if (event.key === "Enter") {
@@ -1187,8 +1359,17 @@ function bindEvents() {
     try {
       const applied = await importLocalMaster(file);
       renderAll();
-      showImportMessage(`有効取込 ${applied.rowCount.toLocaleString("ja-JP")}件／エラー除外 ${applied.errorExcludedCount.toLocaleString("ja-JP")}件。棚卸状態をリセットしました。${applied.masterSaved ? "" : " ブラウザ保存容量が不足したため、再起動後は再取込が必要です。"}`, "ok");
-      showResult("idle", "部署を選択してください", "対象終了日を確認し、棚卸する施設・部署を選択してください。");
+      elements.resetInventoryMessage.textContent = "";
+      const stateSummary = `読取済 ${applied.retainedReadCount.toLocaleString("ja-JP")}件（手動確認 ${applied.retainedManualCount.toLocaleString("ja-JP")}件）／再発行 ${applied.retainedReissueCount.toLocaleString("ja-JP")}件を引き継ぎ、新規 ${applied.addedLabelCount.toLocaleString("ja-JP")}件、対象外 ${applied.removedLabelCount.toLocaleString("ja-JP")}件です。`;
+      const departmentNotice = applied.departmentCleared ? " 再取込前の部署は最新データの対象にないため、部署選択を解除しました。" : "";
+      showImportMessage(`有効取込 ${applied.rowCount.toLocaleString("ja-JP")}件／エラー除外 ${applied.errorExcludedCount.toLocaleString("ja-JP")}件。${stateSummary}${departmentNotice}${applied.masterSaved ? "" : " ブラウザ保存容量が不足したため、再起動後は再取込が必要です。"}`, "ok");
+      if (applied.departmentPreserved) {
+        showResult("idle", "棚卸状態を引き継ぎました", `${state.currentDepartment.facilityName} / ${state.currentDepartment.departmentName} の棚卸を続けられます。`);
+      } else if (applied.departmentCleared) {
+        showResult("warning", "部署選択を解除しました", `${applied.previousDepartment.facilityName} / ${applied.previousDepartment.departmentName} は最新データの対象にありません。部署を選び直してください。`);
+      } else {
+        showResult("idle", "部署を選択してください", "対象終了日を確認し、棚卸する施設・部署を選択してください。");
+      }
     } catch (error) {
       showImportMessage(error.message, "error");
       playAlertSound();
@@ -1242,6 +1423,18 @@ function bindEvents() {
   });
 
   elements.enableAudioButton.addEventListener("click", () => { void unlockAudio(); });
+
+  elements.resetFacilitySelect.addEventListener("change", () => {
+    elements.resetInventoryButton.disabled = !elements.resetFacilitySelect.value;
+    elements.resetInventoryMessage.textContent = "";
+  });
+  elements.resetInventoryButton.addEventListener("click", openResetConfirmDialog);
+  elements.cancelResetButton.addEventListener("click", closeResetConfirmDialog);
+  elements.executeResetButton.addEventListener("click", executeFacilityReset);
+  elements.resetConfirmDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeResetConfirmDialog();
+  });
 
   elements.printPreviewButton.addEventListener("click", (event) => {
     event.preventDefault();
@@ -1339,10 +1532,10 @@ if (typeof document !== "undefined") {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     REQUIRED_HEADERS, OPTIONAL_VALUE_HEADERS, PRINT_COLUMN_HEADERS, state, normalizeLabelKey, splitTsvRecords, isValidDateKey, parseTsv, buildLabelKey, normalizeQr,
-    getExpectedCenterCode, departmentKey, departmentFromRow, rebuildIndexes, findLabel, parseDateInput, validateTargetEndDate,
+    getExpectedCenterCode, departmentKey, departmentFromRow, facilityKey, facilityFromRow, rebuildIndexes, findLabel, parseDateInput, validateTargetEndDate,
     isRowOnOrBeforeEndDate, matchesDepartment, getEligibleDepartments, getUniqueLabelRows, getCurrentTargetLabels, getUnreadLabels,
-    getTargetCounts, getDepartmentProgress, getOverallProgress, getOutputTargetLabels, getReissueTargetLabels, getOutputRecords, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
-    isCompletionTransition, getPrintRowValues, createPdfReportData, todayInputValue, formatDateForDisplay, formatMasterDate, applyMasterData, saveState, restoreState, createHistoryRecord,
+    getTargetCounts, getDepartmentProgress, getOverallProgress, getOutputTargetLabels, getResetFacilities, getReissueTargetLabels, getOutputRecords, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
+    isCompletionTransition, resetInventoryForFacility, getPrintRowValues, createPdfReportData, todayInputValue, formatDateForDisplay, formatMasterDate, applyMasterData, saveState, restoreState, createHistoryRecord,
     createOutputRecord, filterOutputRecords, buildOutputCsv, openPdfLoadingWindow, createPdfBlob, displayPdfUrl, removeLegacyPwaArtifacts
   };
 }

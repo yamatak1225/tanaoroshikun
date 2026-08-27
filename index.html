@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>棚卸くん</title>
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
-  <link rel="stylesheet" href="style.css?v=20260821-14">
+  <link rel="stylesheet" href="style.css?v=20260827-15">
 </head>
 <body>
   <header class="app-header">
@@ -101,7 +101,7 @@
       <section class="card master-import-card">
         <label class="file-button" for="masterFile">在庫差異.tsvを選択</label>
         <input id="masterFile" class="visually-hidden" type="file" accept=".tsv,text/tab-separated-values,text/plain">
-        <p class="help-text">CP932（Shift-JIS系）のTSVを読み込みます。正常に検証できた場合だけ、現在のマスターと棚卸状態を置き換えます。</p>
+        <p class="help-text">CP932（Shift-JIS系）のTSVを読み込みます。最新マスターへ更新し、同じラベルキーの棚卸状態は引き継ぎます。</p>
         <p id="importMessage" class="import-message" aria-live="polite"></p>
       </section>
       <section class="card"><h3>マスター情報</h3><dl class="master-details">
@@ -114,6 +114,14 @@
         <div><dt>エラー除外件数</dt><dd id="masterErrorExcludedCount">0件</dd></div>
         <div><dt>ラベル日付 最後</dt><dd id="masterMaxDate">―</dd></div>
       </dl><p id="masterSummary" class="visually-hidden">在庫差異.tsvを読み込んでください。</p></section>
+      <section class="card inventory-reset-card">
+        <h3>棚卸情報リセット</h3>
+        <p class="help-text">選択した施設の読取済・手動確認・再発行状態だけを初期化します。在庫差異.tsvのマスターは削除しません。</p>
+        <label for="resetFacilitySelect">対象施設</label>
+        <select id="resetFacilitySelect" disabled><option value="">マスターを読み込んでください</option></select>
+        <button id="resetInventoryButton" class="button button--danger" type="button" disabled>棚卸情報をリセット</button>
+        <p id="resetInventoryMessage" class="inline-message" aria-live="polite"></p>
+      </section>
       <section class="card"><h3>音声</h3><p class="help-text">iPhoneでは、最初に一度タップすると音声を再生しやすくなります。</p><button id="enableAudioButton" class="button button--secondary" type="button">音声を有効化</button> <span id="audioStatus" class="inline-status">未確認</span></section>
     </section>
   </main>
@@ -136,9 +144,20 @@
     </div>
   </section>
 
+  <dialog id="resetConfirmDialog" class="reset-confirm-dialog" aria-labelledby="resetConfirmHeading">
+    <div class="reset-confirm-content">
+      <h2 id="resetConfirmHeading">棚卸情報リセット</h2>
+      <p id="resetConfirmMessage"></p>
+      <div class="reset-confirm-actions">
+        <button id="cancelResetButton" class="button button--secondary" type="button">キャンセル</button>
+        <button id="executeResetButton" class="button button--danger" type="button">実行</button>
+      </div>
+    </div>
+  </dialog>
+
   <script src="vendor/pdf-lib.min.js"></script>
   <script src="vendor/fontkit.umd.min.js"></script>
-  <script src="pdf-report.js?v=20260821-14"></script>
-  <script src="app.js?v=20260821-14"></script>
+  <script src="pdf-report.js?v=20260827-15"></script>
+  <script src="app.js?v=20260827-15"></script>
 </body>
 </html>

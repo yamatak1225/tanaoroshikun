@@ -93,6 +93,7 @@ main { width: min(100%, 900px); margin: 0 auto; padding: 14px 12px calc(28px + e
 }
 .button:disabled { cursor: not-allowed; opacity: .45; }
 .button--danger-light { color: #7d1710; background: #ffe3e0; border: 1px solid #ffb8b2; }
+.button--danger { color: #fff; background: var(--red); border: 1px solid #8f1d15; }
 .button--secondary { color: var(--navy); background: var(--blue-soft); border: 1px solid #b9cee3; }
 .file-button { width: 100%; min-height: 58px; font-size: 1.05rem; }
 
@@ -113,6 +114,7 @@ input[type="search"], select { width: 100%; min-width: 0; min-height: 42px; padd
 .result-panel { min-height: 220px; margin-bottom: 8px; padding: 18px 15px; border: 3px solid #8795a3; border-radius: 16px; text-align: center; }
 .result-panel--idle { color: #354452; background: #eef2f5; }
 .result-panel--ok { color: #043923; border-color: var(--green); background: var(--green-soft); }
+.result-panel--warning { color: #664000; border-color: #d49a1f; background: #fff6dc; }
 .result-panel--ng { color: #6e120c; border-color: var(--red); background: var(--red-soft); }
 .result-topline { display: flex; min-height: 26px; align-items: center; justify-content: space-between; gap: 8px; }
 .result-caption { margin-bottom: 0; font-size: .8rem; font-weight: 800; opacity: .75; }
@@ -208,6 +210,17 @@ input[type="search"], select { width: 100%; min-width: 0; min-height: 42px; padd
 .master-details div:last-child { border-bottom: 0; }
 .master-details dt { color: var(--muted); font-weight: 700; }
 .master-details dd { margin: 0; overflow-wrap: anywhere; font-weight: 800; }
+.inventory-reset-card { display: grid; gap: 10px; border-color: #e5b4af; background: #fffafa; }
+.inventory-reset-card h3, .inventory-reset-card p { margin-bottom: 0; }
+.inventory-reset-card label { color: var(--muted); font-size: .84rem; font-weight: 800; }
+.inventory-reset-card .button { min-height: 48px; }
+.reset-confirm-dialog { width: min(calc(100% - 24px), 520px); padding: 0; border: 0; border-radius: 16px; color: var(--ink); background: #fff; box-shadow: 0 18px 55px rgba(0, 0, 0, .35); }
+.reset-confirm-dialog::backdrop { background: rgba(9, 31, 48, .64); }
+.reset-confirm-content { padding: 20px; }
+.reset-confirm-content h2 { margin-bottom: 10px; color: var(--red); }
+.reset-confirm-content p { margin-bottom: 18px; line-height: 1.65; }
+.reset-confirm-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.reset-confirm-actions .button { min-height: 48px; }
 .inline-status { margin-left: 8px; color: var(--muted); font-weight: 700; }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0,0,0,0) !important; white-space: nowrap !important; border: 0 !important; }
 
