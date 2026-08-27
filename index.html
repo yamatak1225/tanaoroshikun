@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>棚卸くん</title>
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
-  <link rel="stylesheet" href="style.css?v=20260827-15">
+  <link rel="stylesheet" href="style.css?v=20260827-16">
 </head>
 <body>
   <header class="app-header">
@@ -118,7 +118,7 @@
         <h3>棚卸情報リセット</h3>
         <p class="help-text">選択した施設の読取済・手動確認・再発行状態だけを初期化します。在庫差異.tsvのマスターは削除しません。</p>
         <label for="resetFacilitySelect">対象施設</label>
-        <select id="resetFacilitySelect" disabled><option value="">マスターを読み込んでください</option></select>
+        <select id="resetFacilitySelect" disabled><option value="">リセット可能な棚卸情報はありません</option></select>
         <button id="resetInventoryButton" class="button button--danger" type="button" disabled>棚卸情報をリセット</button>
         <p id="resetInventoryMessage" class="inline-message" aria-live="polite"></p>
       </section>
@@ -157,7 +157,7 @@
 
   <script src="vendor/pdf-lib.min.js"></script>
   <script src="vendor/fontkit.umd.min.js"></script>
-  <script src="pdf-report.js?v=20260827-15"></script>
-  <script src="app.js?v=20260827-15"></script>
+  <script src="pdf-report.js?v=20260827-16"></script>
+  <script src="app.js?v=20260827-16"></script>
 </body>
 </html>

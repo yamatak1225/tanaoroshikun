@@ -7,6 +7,7 @@ const REQUIRED_HEADERS = ["施設コード", "施設名称", "部署コード", 
 const OPTIONAL_VALUE_HEADERS = new Set(["メーカー", "メーカー名", "品名", "規格", "製品番号"]);
 const PRINT_COLUMN_HEADERS = ["No.", "施設名 / 部署名", "商品コード", "商品名", "規格", "製品番号", "ラベルキー", "ラベル日付", "対応"];
 const DEPARTMENT_SEPARATOR = "\u001f";
+const STATE_KEY_SEPARATOR = "|";
 
 const state = {
   masterRows: [],
@@ -15,6 +16,7 @@ const state = {
   readLabelKeys: new Set(),
   confirmationMethods: new Map(),
   reissueLabelKeys: new Set(),
+  savedFacilities: new Map(),
   reissueFilterActive: false,
   targetEndDate: "",
   currentDepartment: null,
@@ -84,6 +86,7 @@ function parseTsv(text) {
 
   const rows = [];
   const errors = [];
+  const sourceFacilities = new Map();
   let errorExcludedCount = 0;
   records.slice(1).forEach((record, recordIndex) => {
     const line = recordIndex + 2;
@@ -93,6 +96,7 @@ function parseTsv(text) {
     }
     const row = {};
     headers.forEach((header, index) => { if (header) row[header] = normalizeValue(record[index]); });
+    if (row["施設コード"] && row["施設名称"]) sourceFacilities.set(row["施設コード"], { facilityCode: row["施設コード"], facilityName: row["施設名称"] });
     // 在庫差異データ側でエラーになった行は、棚卸対象データへ入れる前に除外する。
     if (row["エラーメッセージ"] !== "") {
       errorExcludedCount += 1;
@@ -114,7 +118,7 @@ function parseTsv(text) {
   });
   if (errors.length) throw new Error(`${errors.slice(0, 5).join("\n")}${errors.length > 5 ? `\nほか${errors.length - 5}件のエラーがあります。` : ""}`);
   if (!rows.length) throw new Error("有効なデータ行がありません。");
-  return { headers, rows, errorExcludedCount };
+  return { headers, rows, errorExcludedCount, sourceFacilities: [...sourceFacilities.values()] };
 }
 
 function removeLeadingZeros(value) {
@@ -161,7 +165,7 @@ function departmentFromRow(row) {
 
 function facilityKey(facility) {
   if (!facility) return "";
-  return [facility.facilityCode, facility.facilityName].join(DEPARTMENT_SEPARATOR);
+  return normalizeValue(facility.facilityCode);
 }
 
 function facilityFromRow(row) {
@@ -169,6 +173,35 @@ function facilityFromRow(row) {
     facilityCode: row["施設コード"],
     facilityName: row["施設名称"]
   };
+}
+
+function inventoryStateKey(facilityCode, labelKey) {
+  const normalizedFacilityCode = normalizeValue(facilityCode);
+  const normalizedLabelKey = normalizeLabelKey(labelKey);
+  return normalizedFacilityCode && normalizedLabelKey ? `${normalizedFacilityCode}${STATE_KEY_SEPARATOR}${normalizedLabelKey}` : "";
+}
+
+function inventoryStateKeyForRow(row) {
+  return inventoryStateKey(row?.["施設コード"], row?.["ラベルキー"]);
+}
+
+function parseInventoryStateKey(value) {
+  const text = String(value ?? "");
+  const separatorIndex = text.indexOf(STATE_KEY_SEPARATOR);
+  if (separatorIndex <= 0 || separatorIndex === text.length - 1) return null;
+  return { facilityCode: text.slice(0, separatorIndex), labelKey: text.slice(separatorIndex + 1) };
+}
+
+function isRowRead(row) { return state.readLabelKeys.has(inventoryStateKeyForRow(row)); }
+function confirmationMethodForRow(row) { return state.confirmationMethods.get(inventoryStateKeyForRow(row)) || ""; }
+function isRowReissue(row) { return state.reissueLabelKeys.has(inventoryStateKeyForRow(row)); }
+
+function registerSavedFacilities(facilities) {
+  (facilities || []).forEach((facility) => {
+    const facilityCode = normalizeValue(facility?.facilityCode);
+    if (!facilityCode) return;
+    state.savedFacilities.set(facilityCode, { facilityCode, facilityName: normalizeValue(facility.facilityName) || facilityCode });
+  });
 }
 
 function rebuildIndexes() {
@@ -180,9 +213,13 @@ function rebuildIndexes() {
   });
 }
 
-function findLabel(labelKey) {
+function findLabel(labelKey, department = state.currentDepartment) {
   const candidates = state.labelIndex.get(normalizeLabelKey(labelKey)) || [];
   if (!candidates.length) return { ok: false, code: "NOT_FOUND", candidates };
+  if (candidates.length > 1 && department) {
+    const departmentCandidates = candidates.filter((row) => row["施設コード"] === department.facilityCode && row["部署コード"] === department.departmentCode);
+    if (departmentCandidates.length === 1) return { ok: true, row: departmentCandidates[0] };
+  }
   if (candidates.length > 1) return { ok: false, code: "AMBIGUOUS_LABEL", candidates };
   return { ok: true, row: candidates[0] };
 }
@@ -228,7 +265,10 @@ function getEligibleDepartments(rows = state.masterRows) {
 
 function getUniqueLabelRows(rows) {
   const unique = new Map();
-  rows.forEach((row) => { if (!unique.has(row["ラベルキー"])) unique.set(row["ラベルキー"], row); });
+  rows.forEach((row) => {
+    const key = inventoryStateKeyForRow(row);
+    if (!unique.has(key)) unique.set(key, row);
+  });
   return [...unique.values()];
 }
 
@@ -238,11 +278,11 @@ function getCurrentTargetLabels() {
 }
 
 function getUnreadLabels() {
-  return getCurrentTargetLabels().filter((row) => !state.readLabelKeys.has(row["ラベルキー"]));
+  return getCurrentTargetLabels().filter((row) => !isRowRead(row));
 }
 
 function getReissueTargetLabels() {
-  return getUniqueLabelRows(getOutputTargetLabels()).filter((row) => state.reissueLabelKeys.has(row["ラベルキー"]));
+  return getUniqueLabelRows(getOutputTargetLabels()).filter((row) => isRowReissue(row));
 }
 
 function getOutputTargetLabels() {
@@ -250,26 +290,33 @@ function getOutputTargetLabels() {
   return state.masterRows.filter((row) => isRowOnOrBeforeEndDate(row));
 }
 
-function getResetFacilities(rows = getOutputTargetLabels()) {
+function getResetFacilities(rows = state.masterRows) {
   const facilities = new Map();
   rows.forEach((row) => {
     const facility = facilityFromRow(row);
     const key = facilityKey(facility);
     if (!facilities.has(key)) facilities.set(key, facility);
   });
+  const progressFacilityCodes = new Set([...state.readLabelKeys, ...state.confirmationMethods.keys(), ...state.reissueLabelKeys]
+    .map(parseInventoryStateKey).filter(Boolean).map((identity) => identity.facilityCode));
+  progressFacilityCodes.forEach((facilityCode) => {
+    if (facilities.has(facilityCode)) return;
+    const savedFacility = state.savedFacilities.get(facilityCode);
+    facilities.set(facilityCode, savedFacility || { facilityCode, facilityName: facilityCode });
+  });
   return [...facilities.values()].sort((left, right) => left.facilityName.localeCompare(right.facilityName, "ja"));
 }
 
 function getTargetCounts() {
   const targets = getCurrentTargetLabels();
-  const read = targets.filter((row) => state.readLabelKeys.has(row["ラベルキー"])).length;
+  const read = targets.filter(isRowRead).length;
   return { target: targets.length, read, unread: targets.length - read };
 }
 
 function getDepartmentProgress(rows = state.masterRows) {
   return getEligibleDepartments(rows).map((department) => {
     const targets = getUniqueLabelRows(rows.filter((row) => isRowOnOrBeforeEndDate(row) && matchesDepartment(row, department)));
-    const read = targets.filter((row) => state.readLabelKeys.has(row["ラベルキー"])).length;
+    const read = targets.filter(isRowRead).length;
     return { ...department, target: targets.length, read, unread: targets.length - read, completed: targets.length > 0 && read === targets.length };
   });
 }
@@ -322,7 +369,7 @@ function validateSpdLabel(rawValue) {
   if (!isRowOnOrBeforeEndDate(row)) {
     return { ok: false, code: "OUTSIDE_PERIOD", title: "対象終了日より後のラベルです", message: `払出予定伝票日付：${formatMasterDate(row["払出予定伝票日付"])} ／ 対象終了日：${formatDateForDisplay(state.targetEndDate)}`, labelKey: parsed.labelKey, row };
   }
-  if (state.readLabelKeys.has(parsed.labelKey)) {
+  if (isRowRead(row)) {
     return { ok: false, code: "DUPLICATE", title: "このSPDラベルは読取済です", message: "二重計上していません。次のSPDラベルを読み取ってください。", labelKey: parsed.labelKey, row };
   }
   return { ok: true, code: "SPD_OK", title: "読取完了", message: "SPDラベルを読取済にしました。", raw: parsed.raw, labelKey: parsed.labelKey, row };
@@ -331,8 +378,10 @@ function validateSpdLabel(rawValue) {
 function acceptSpdLabel(rawValue) {
   const result = validateSpdLabel(rawValue);
   if (!result.ok) return result;
-  state.readLabelKeys.add(result.labelKey);
-  state.confirmationMethods.set(result.labelKey, "バーコード");
+  const stateKey = inventoryStateKeyForRow(result.row);
+  state.readLabelKeys.add(stateKey);
+  state.confirmationMethods.set(stateKey, "バーコード");
+  registerSavedFacilities([facilityFromRow(result.row)]);
   saveState();
   return { ...result, confirmationMethod: "バーコード", counts: getTargetCounts() };
 }
@@ -341,20 +390,28 @@ function confirmUnreadLabel(labelKey) {
   const normalizedKey = normalizeLabelKey(labelKey);
   const row = getCurrentTargetLabels().find((candidate) => candidate["ラベルキー"] === normalizedKey);
   if (!row) return { ok: false, code: "NOT_TARGET", title: "確認対象外", message: "現在選択中の部署の未読取ラベルではありません。", labelKey: normalizedKey };
-  if (state.readLabelKeys.has(normalizedKey)) return { ok: false, code: "DUPLICATE", title: "確認済です", message: "このラベルはすでに読取済です。", labelKey: normalizedKey, row };
-  state.readLabelKeys.add(normalizedKey);
-  state.confirmationMethods.set(normalizedKey, "手動確認");
+  const stateKey = inventoryStateKeyForRow(row);
+  if (state.readLabelKeys.has(stateKey)) return { ok: false, code: "DUPLICATE", title: "確認済です", message: "このラベルはすでに読取済です。", labelKey: normalizedKey, row };
+  state.readLabelKeys.add(stateKey);
+  state.confirmationMethods.set(stateKey, "手動確認");
+  registerSavedFacilities([facilityFromRow(row)]);
   saveState();
   return { ok: true, code: "MANUAL_OK", title: "確認完了", message: "現物確認により読取済にしました。", labelKey: normalizedKey, row, confirmationMethod: "手動確認", counts: getTargetCounts() };
 }
 
-function toggleReissueLabel(labelKey) {
+function toggleReissueLabel(labelKey, facilityCode = state.currentDepartment?.facilityCode) {
   const normalizedKey = normalizeLabelKey(labelKey);
-  if (!getUniqueLabelRows(getOutputTargetLabels()).some((row) => row["ラベルキー"] === normalizedKey)) return false;
-  if (state.reissueLabelKeys.has(normalizedKey)) state.reissueLabelKeys.delete(normalizedKey);
-  else state.reissueLabelKeys.add(normalizedKey);
+  const normalizedFacilityCode = normalizeValue(facilityCode);
+  const candidates = getOutputTargetLabels().filter((candidate) => candidate["ラベルキー"] === normalizedKey
+    && (!normalizedFacilityCode || candidate["施設コード"] === normalizedFacilityCode));
+  const row = candidates.length === 1 ? candidates[0] : null;
+  if (!row) return false;
+  const stateKey = inventoryStateKeyForRow(row);
+  if (state.reissueLabelKeys.has(stateKey)) state.reissueLabelKeys.delete(stateKey);
+  else state.reissueLabelKeys.add(stateKey);
+  registerSavedFacilities([facilityFromRow(row)]);
   saveState();
-  return state.reissueLabelKeys.has(normalizedKey);
+  return state.reissueLabelKeys.has(stateKey);
 }
 
 function isCompletionTransition(beforeCounts, afterCounts) {
@@ -364,36 +421,32 @@ function isCompletionTransition(beforeCounts, afterCounts) {
 function resetInventoryForFacility(facility) {
   const normalizedFacility = {
     facilityCode: normalizeValue(facility?.facilityCode),
-    facilityName: normalizeValue(facility?.facilityName)
+    facilityName: normalizeValue(facility?.facilityName) || normalizeValue(facility?.facilityCode)
   };
-  if (!normalizedFacility.facilityCode || !normalizedFacility.facilityName) {
+  if (!normalizedFacility.facilityCode) {
     return { ok: false, message: "リセット対象施設を選択してください。" };
-  }
-  const currentTargets = getOutputTargetLabels();
-  const facilityRows = currentTargets.filter((row) => row["施設コード"] === normalizedFacility.facilityCode && row["施設名称"] === normalizedFacility.facilityName);
-  const targetKeys = new Set(facilityRows.map((row) => row["ラベルキー"]));
-  if (!targetKeys.size) return { ok: false, message: "選択した施設には現在の棚卸対象ラベルがありません。" };
-
-  // 状態は既存仕様どおりラベルキー単位のため、施設間で重複するキーは他施設保護を優先して停止する。
-  const sharedKeys = [...targetKeys].filter((labelKey) => currentTargets.some((row) => row["ラベルキー"] === labelKey
-    && (row["施設コード"] !== normalizedFacility.facilityCode || row["施設名称"] !== normalizedFacility.facilityName)));
-  if (sharedKeys.length) {
-    return { ok: false, message: `複数施設で同じラベルキーが使用されています。安全のためリセットできません：${sharedKeys.slice(0, 3).join("、")}` };
   }
 
   let readResetCount = 0;
   let reissueResetCount = 0;
-  targetKeys.forEach((labelKey) => {
-    if (state.readLabelKeys.delete(labelKey)) readResetCount += 1;
-    state.confirmationMethods.delete(labelKey);
-    if (state.reissueLabelKeys.delete(labelKey)) reissueResetCount += 1;
+  [...state.readLabelKeys].forEach((stateKey) => {
+    if (parseInventoryStateKey(stateKey)?.facilityCode !== normalizedFacility.facilityCode) return;
+    if (state.readLabelKeys.delete(stateKey)) readResetCount += 1;
+    state.confirmationMethods.delete(stateKey);
+  });
+  [...state.confirmationMethods.keys()].forEach((stateKey) => {
+    if (parseInventoryStateKey(stateKey)?.facilityCode === normalizedFacility.facilityCode) state.confirmationMethods.delete(stateKey);
+  });
+  [...state.reissueLabelKeys].forEach((stateKey) => {
+    if (parseInventoryStateKey(stateKey)?.facilityCode === normalizedFacility.facilityCode && state.reissueLabelKeys.delete(stateKey)) reissueResetCount += 1;
   });
   state.reissueFilterActive = false;
   saveState();
+  const targetCount = new Set(state.masterRows.filter((row) => row["施設コード"] === normalizedFacility.facilityCode).map((row) => inventoryStateKeyForRow(row))).size;
   return {
     ok: true,
     facility: normalizedFacility,
-    targetCount: targetKeys.size,
+    targetCount,
     readResetCount,
     reissueResetCount
   };
@@ -504,7 +557,7 @@ async function clearScanHistory() {
 
 function createOutputRecord(row) {
   const labelKey = row["ラベルキー"];
-  const read = state.readLabelKeys.has(labelKey);
+  const read = isRowRead(row);
   return {
     productCode: row["商品コード"] || "",
     manufacturerName: row["メーカー名"] || row["メーカー"] || "",
@@ -520,8 +573,8 @@ function createOutputRecord(row) {
     departmentCode: row["部署コード"] || "",
     departmentName: row["部署名称"] || "",
     readStatus: read ? "読取済" : "未読取",
-    confirmationMethod: read ? state.confirmationMethods.get(labelKey) || "" : "",
-    reissueStatus: state.reissueLabelKeys.has(labelKey) ? "再発行" : ""
+    confirmationMethod: read ? confirmationMethodForRow(row) : "",
+    reissueStatus: isRowReissue(row) ? "再発行" : ""
   };
 }
 
@@ -601,10 +654,12 @@ function saveState() {
   if (typeof localStorage === "undefined") return false;
   try {
     localStorage.setItem(STORAGE_KEYS.state, JSON.stringify({
+      formatVersion: 2,
       masterFingerprint: state.masterInfo?.fingerprint || null,
       readLabelKeys: [...state.readLabelKeys],
       confirmationMethods: [...state.confirmationMethods],
       reissueLabelKeys: [...state.reissueLabelKeys],
+      savedFacilities: [...state.savedFacilities.values()],
       targetEndDate: state.targetEndDate,
       currentDepartment: state.currentDepartment
     }));
@@ -615,15 +670,28 @@ function saveState() {
   }
 }
 
-function reconcileInventoryState(validLabelKeys) {
-  const validKeys = validLabelKeys instanceof Set ? validLabelKeys : new Set(validLabelKeys || []);
-  const retainedReadKeys = [...state.readLabelKeys].filter((labelKey) => validKeys.has(labelKey));
+function migrateStoredStateKey(value, masterRows = state.masterRows) {
+  const parsed = parseInventoryStateKey(value);
+  if (parsed) return inventoryStateKey(parsed.facilityCode, parsed.labelKey);
+  const legacyLabelKey = normalizeLabelKey(value);
+  const facilityCodes = [...new Set(masterRows.filter((row) => row["ラベルキー"] === legacyLabelKey).map((row) => row["施設コード"]))];
+  return facilityCodes.length === 1 ? inventoryStateKey(facilityCodes[0], legacyLabelKey) : "";
+}
+
+function reconcileInventoryState(validStateKeys, refreshedFacilityCodes) {
+  const validKeys = validStateKeys instanceof Set ? validStateKeys : new Set(validStateKeys || []);
+  const refreshedCodes = refreshedFacilityCodes instanceof Set ? refreshedFacilityCodes : new Set(refreshedFacilityCodes || []);
+  const shouldRetain = (stateKey) => {
+    const identity = parseInventoryStateKey(stateKey);
+    return Boolean(identity && (!refreshedCodes.has(identity.facilityCode) || validKeys.has(stateKey)));
+  };
+  const retainedReadKeys = [...state.readLabelKeys].filter(shouldRetain);
   state.readLabelKeys = new Set(retainedReadKeys);
-  state.confirmationMethods = new Map(retainedReadKeys.map((labelKey) => [
-    labelKey,
-    state.confirmationMethods.get(labelKey) || "バーコード"
+  state.confirmationMethods = new Map(retainedReadKeys.map((stateKey) => [
+    stateKey,
+    state.confirmationMethods.get(stateKey) || "バーコード"
   ]));
-  state.reissueLabelKeys = new Set([...state.reissueLabelKeys].filter((labelKey) => validKeys.has(labelKey)));
+  state.reissueLabelKeys = new Set([...state.reissueLabelKeys].filter(shouldRetain));
 }
 
 function restoreState() {
@@ -647,16 +715,20 @@ function restoreState() {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.state) || "null");
     if (saved?.targetEndDate && parseDateInput(saved.targetEndDate)) state.targetEndDate = saved.targetEndDate;
     if (saved && saved.masterFingerprint === state.masterInfo?.fingerprint) {
-      state.readLabelKeys = new Set(Array.isArray(saved.readLabelKeys) ? saved.readLabelKeys.map(normalizeLabelKey) : []);
-      state.confirmationMethods = new Map(Array.isArray(saved.confirmationMethods) ? saved.confirmationMethods.map(([key, method]) => [normalizeLabelKey(key), method]) : []);
+      registerSavedFacilities(Array.isArray(saved.savedFacilities) ? saved.savedFacilities : []);
+      registerSavedFacilities(state.masterRows.map(facilityFromRow));
+      state.readLabelKeys = new Set(Array.isArray(saved.readLabelKeys) ? saved.readLabelKeys.map((key) => migrateStoredStateKey(key)).filter(Boolean) : []);
+      state.confirmationMethods = new Map(Array.isArray(saved.confirmationMethods) ? saved.confirmationMethods
+        .map(([key, method]) => [migrateStoredStateKey(key), method]).filter(([key]) => key) : []);
       state.readLabelKeys.forEach((key) => { if (!state.confirmationMethods.has(key)) state.confirmationMethods.set(key, "バーコード"); });
-      state.reissueLabelKeys = new Set(Array.isArray(saved.reissueLabelKeys) ? saved.reissueLabelKeys.map(normalizeLabelKey) : []);
+      state.reissueLabelKeys = new Set(Array.isArray(saved.reissueLabelKeys) ? saved.reissueLabelKeys.map((key) => migrateStoredStateKey(key)).filter(Boolean) : []);
       state.currentDepartment = saved.currentDepartment || null;
     }
   } catch (error) {
     console.error("保存済み棚卸状態を読み込めません。", error);
   }
-  reconcileInventoryState(new Set(state.masterRows.map((row) => row["ラベルキー"])));
+  const restoredFacilities = state.masterInfo?.sourceFacilities?.length ? state.masterInfo.sourceFacilities : state.masterRows.map(facilityFromRow);
+  reconcileInventoryState(new Set(state.masterRows.map(inventoryStateKeyForRow)), new Set(restoredFacilities.map((facility) => facility.facilityCode)));
   if (state.currentDepartment) {
     state.currentDepartment = getEligibleDepartments().find((department) => department.facilityCode === state.currentDepartment.facilityCode
       && department.departmentCode === state.currentDepartment.departmentCode) || null;
@@ -672,26 +744,29 @@ function decodeMasterBuffer(arrayBuffer) {
 }
 
 function applyMasterData(rows, sourceInfo, now = new Date()) {
-  const previousLabelKeys = new Set(state.masterRows.map((row) => row["ラベルキー"]));
+  const previousLabelKeys = new Set(state.masterRows.map(inventoryStateKeyForRow));
   const previousDepartment = state.currentDepartment ? { ...state.currentDepartment } : null;
-  const previousReadKeys = new Set(state.readLabelKeys);
-  const previousConfirmationMethods = new Map(state.confirmationMethods);
-  const previousReissueKeys = new Set(state.reissueLabelKeys);
+  state.readLabelKeys = new Set([...state.readLabelKeys].map((key) => migrateStoredStateKey(key)).filter(Boolean));
+  state.confirmationMethods = new Map([...state.confirmationMethods].map(([key, method]) => [migrateStoredStateKey(key), method]).filter(([key]) => key));
+  state.reissueLabelKeys = new Set([...state.reissueLabelKeys].map((key) => migrateStoredStateKey(key)).filter(Boolean));
   const previousTargetEndDate = validateTargetEndDate().ok ? state.targetEndDate : todayInputValue(now);
-  const currentLabelKeys = new Set(rows.map((row) => row["ラベルキー"]));
+  const currentLabelKeys = new Set(rows.map(inventoryStateKeyForRow));
+  const sourceFacilities = sourceInfo.sourceFacilities?.length
+    ? sourceInfo.sourceFacilities.map((facility) => ({ facilityCode: normalizeValue(facility.facilityCode), facilityName: normalizeValue(facility.facilityName) }))
+    : [...new Map(rows.map((row) => [row["施設コード"], facilityFromRow(row)])).values()];
+  const refreshedFacilityCodes = new Set(sourceFacilities.map((facility) => facility.facilityCode));
 
   state.masterRows = rows;
   state.masterInfo = {
     ...sourceInfo,
+    sourceFacilities,
     importedAt: now.toISOString(),
     rowCount: rows.length,
     fingerprint: createFingerprint(sourceInfo.fileName, sourceInfo.size, sourceInfo.lastModified, rows)
   };
   state.targetEndDate = previousTargetEndDate;
-  state.readLabelKeys = previousReadKeys;
-  state.confirmationMethods = previousConfirmationMethods;
-  state.reissueLabelKeys = previousReissueKeys;
-  reconcileInventoryState(currentLabelKeys);
+  registerSavedFacilities(sourceFacilities);
+  reconcileInventoryState(currentLabelKeys, refreshedFacilityCodes);
   state.reissueFilterActive = false;
   rebuildIndexes();
   const eligibleDepartments = getEligibleDepartments();
@@ -707,9 +782,9 @@ function applyMasterData(rows, sourceInfo, now = new Date()) {
     errorExcludedCount: sourceInfo.errorExcludedCount || 0,
     addedLabelCount: [...currentLabelKeys].filter((labelKey) => !previousLabelKeys.has(labelKey)).length,
     removedLabelCount: [...previousLabelKeys].filter((labelKey) => !currentLabelKeys.has(labelKey)).length,
-    retainedReadCount: state.readLabelKeys.size,
-    retainedManualCount: [...state.confirmationMethods.values()].filter((method) => method === "手動確認").length,
-    retainedReissueCount: state.reissueLabelKeys.size,
+    retainedReadCount: [...currentLabelKeys].filter((stateKey) => state.readLabelKeys.has(stateKey)).length,
+    retainedManualCount: [...currentLabelKeys].filter((stateKey) => state.confirmationMethods.get(stateKey) === "手動確認").length,
+    retainedReissueCount: [...currentLabelKeys].filter((stateKey) => state.reissueLabelKeys.has(stateKey)).length,
     departmentPreserved: Boolean(previousDepartment && state.currentDepartment),
     departmentCleared: Boolean(previousDepartment && !state.currentDepartment),
     previousDepartment
@@ -725,7 +800,8 @@ async function importLocalMaster(file) {
     size: file.size,
     lastModified: file.lastModified,
     source: "端末ファイル",
-    errorExcludedCount: parsed.errorExcludedCount
+    errorExcludedCount: parsed.errorExcludedCount,
+    sourceFacilities: parsed.sourceFacilities
   });
 }
 
@@ -846,15 +922,12 @@ function renderResetFacilities() {
   elements.resetFacilitySelect.replaceChildren();
   const placeholder = document.createElement("option");
   placeholder.value = "";
-  placeholder.textContent = state.masterRows.length
-    ? (facilities.length ? "リセットする施設を選択してください" : "対象終了日以前の施設がありません")
-    : "マスターを読み込んでください";
+  placeholder.textContent = facilities.length ? "リセットする施設を選択してください" : "リセット可能な棚卸情報はありません";
   elements.resetFacilitySelect.append(placeholder);
-  const duplicatedNames = new Set(facilities.filter((facility, index) => facilities.findIndex((candidate) => candidate.facilityName === facility.facilityName) !== index).map((facility) => facility.facilityName));
   facilities.forEach((facility) => {
     const option = document.createElement("option");
     option.value = facilityKey(facility);
-    option.textContent = duplicatedNames.has(facility.facilityName) ? `${facility.facilityName}（${facility.facilityCode}）` : facility.facilityName;
+    option.textContent = `${facility.facilityName}（${facility.facilityCode}）`;
     elements.resetFacilitySelect.append(option);
   });
   elements.resetFacilitySelect.disabled = !facilities.length;
@@ -879,7 +952,7 @@ function openResetConfirmDialog() {
     return;
   }
   pendingResetFacility = facility;
-  elements.resetConfirmMessage.textContent = `${facility.facilityName}の棚卸情報をすべてリセットします。読取済・手動確認・再発行状態が削除されます。よろしいですか？`;
+  elements.resetConfirmMessage.textContent = `${facility.facilityName}の棚卸情報だけをリセットします。他施設の棚卸情報は変更されません。よろしいですか？`;
   if (typeof elements.resetConfirmDialog.showModal === "function") {
     elements.resetConfirmDialog.showModal();
     elements.cancelResetButton.focus();
@@ -903,8 +976,8 @@ function executeFacilityReset() {
   renderAll();
   elements.resetFacilitySelect.value = facilityKey(result.facility);
   elements.resetInventoryButton.disabled = false;
-  elements.resetInventoryMessage.textContent = `${result.facility.facilityName}の棚卸情報をリセットしました。`;
-  if (state.currentDepartment?.facilityCode === result.facility.facilityCode && state.currentDepartment?.facilityName === result.facility.facilityName) {
+  elements.resetInventoryMessage.textContent = `${result.facility.facilityName}の棚卸情報をリセットしました。他施設の棚卸情報は維持されています。`;
+  if (state.currentDepartment?.facilityCode === result.facility.facilityCode) {
     const counts = getTargetCounts();
     showResult("idle", "棚卸情報をリセットしました", `${result.facility.facilityName}の棚卸を最初から開始できます。未読取 ${counts.unread}件`);
   }
@@ -1036,8 +1109,8 @@ function renderScanner() {
 function createUnreadItem(row, index, options = {}) {
   const article = document.createElement("article");
   const labelKey = row["ラベルキー"];
-  const reissue = state.reissueLabelKeys.has(labelKey);
-  const read = state.readLabelKeys.has(labelKey);
+  const reissue = isRowReissue(row);
+  const read = isRowRead(row);
   article.className = `unread-item${reissue ? " unread-item--reissue" : ""}`;
   const heading = document.createElement("h3");
   heading.textContent = `${index + 1}. ${row["品名"] || ""}`;
@@ -1057,7 +1130,7 @@ function createUnreadItem(row, index, options = {}) {
   department.textContent = `${row["施設名称"]} ／ ${row["部署名称"]}`;
   const readStatus = document.createElement("p");
   readStatus.className = `reissue-read-status ${read ? "is-read" : "is-unread"}`;
-  readStatus.textContent = read ? `読取済（${state.confirmationMethods.get(labelKey) || "バーコード"}）` : "未読取";
+  readStatus.textContent = read ? `読取済（${confirmationMethodForRow(row) || "バーコード"}）` : "未読取";
   const actions = document.createElement("div");
   actions.className = `unread-actions${options.reissueMode ? " is-single" : ""}`;
   const confirmButton = document.createElement("button");
@@ -1065,12 +1138,14 @@ function createUnreadItem(row, index, options = {}) {
   confirmButton.className = "button unread-confirm-button";
   confirmButton.dataset.action = "confirm";
   confirmButton.dataset.labelKey = labelKey;
+  confirmButton.dataset.facilityCode = row["施設コード"];
   confirmButton.textContent = "確認済";
   const reissueButton = document.createElement("button");
   reissueButton.type = "button";
   reissueButton.className = `button unread-reissue-button${reissue ? " is-active" : ""}`;
   reissueButton.dataset.action = "reissue";
   reissueButton.dataset.labelKey = labelKey;
+  reissueButton.dataset.facilityCode = row["施設コード"];
   reissueButton.setAttribute("aria-pressed", String(reissue));
   reissueButton.textContent = reissue ? "再発行対象" : "再発行";
   if (options.reissueMode) actions.append(reissueButton);
@@ -1256,7 +1331,7 @@ function getPrintRowValues(row, index) {
   return [
     String(index + 1), `${row["施設名称"]} / ${row["部署名称"]}`, row["商品コード"] || "―", row["品名"] || "", row["規格"] || "",
     row["製品番号"] || "", row["ラベルキー"], formatMasterDate(row["払出予定伝票日付"]),
-    state.reissueLabelKeys.has(row["ラベルキー"]) ? "ラベル再発行" : ""
+    isRowReissue(row) ? "ラベル再発行" : ""
   ];
 }
 
@@ -1451,8 +1526,9 @@ function bindEvents() {
     const button = event.target.closest("button[data-action][data-label-key]");
     if (!button) return;
     const labelKey = button.dataset.labelKey;
+    const facilityCode = button.dataset.facilityCode;
     if (button.dataset.action === "reissue") {
-      const enabled = toggleReissueLabel(labelKey);
+      const enabled = toggleReissueLabel(labelKey, facilityCode);
       elements.unreadActionMessage.textContent = enabled ? `ラベルキー ${labelKey} を再発行対象にしました。` : `ラベルキー ${labelKey} の再発行対象を解除しました。`;
       renderUnreadList();
       renderOutputData();
@@ -1532,10 +1608,10 @@ if (typeof document !== "undefined") {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     REQUIRED_HEADERS, OPTIONAL_VALUE_HEADERS, PRINT_COLUMN_HEADERS, state, normalizeLabelKey, splitTsvRecords, isValidDateKey, parseTsv, buildLabelKey, normalizeQr,
-    getExpectedCenterCode, departmentKey, departmentFromRow, facilityKey, facilityFromRow, rebuildIndexes, findLabel, parseDateInput, validateTargetEndDate,
+    getExpectedCenterCode, departmentKey, departmentFromRow, facilityKey, facilityFromRow, inventoryStateKey, inventoryStateKeyForRow, parseInventoryStateKey, rebuildIndexes, findLabel, parseDateInput, validateTargetEndDate,
     isRowOnOrBeforeEndDate, matchesDepartment, getEligibleDepartments, getUniqueLabelRows, getCurrentTargetLabels, getUnreadLabels,
     getTargetCounts, getDepartmentProgress, getOverallProgress, getOutputTargetLabels, getResetFacilities, getReissueTargetLabels, getOutputRecords, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
-    isCompletionTransition, resetInventoryForFacility, getPrintRowValues, createPdfReportData, todayInputValue, formatDateForDisplay, formatMasterDate, applyMasterData, saveState, restoreState, createHistoryRecord,
+    isCompletionTransition, resetInventoryForFacility, migrateStoredStateKey, getPrintRowValues, createPdfReportData, todayInputValue, formatDateForDisplay, formatMasterDate, applyMasterData, saveState, restoreState, createHistoryRecord,
     createOutputRecord, filterOutputRecords, buildOutputCsv, openPdfLoadingWindow, createPdfBlob, displayPdfUrl, removeLegacyPwaArtifacts
   };
 }
