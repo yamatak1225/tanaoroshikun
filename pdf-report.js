@@ -201,6 +201,7 @@
       reportType: textValue(report.reportType),
       confirmedBy: textValue(report.confirmedBy),
       confirmedAt: textValue(report.confirmedAt),
+      tableTitle: textValue(report.tableTitle),
       emptyMessage: textValue(report.emptyMessage),
       fileDate: textValue(report.fileDate),
       headers: (report.headers || DEFAULT_HEADERS).map(textValue),
@@ -249,6 +250,10 @@
     const layout = columnLayout(pageWidth, report.columnRatios);
     let page = pdfDoc.addPage(A4_LANDSCAPE);
     let currentY = drawFirstPageHeader(page, font, report, pdfLib);
+    if (report.tableTitle) {
+      drawBoldText(page, report.tableTitle, { x: PAGE_MARGIN, y: currentY - 2, size: 11, font, color: pdfLib.rgb(0, 0, 0) });
+      currentY -= 20;
+    }
     const headerHeight = drawTableRow(page, currentY, report.headers, fonts, layout, pdfLib, { header: true });
     currentY -= headerHeight;
 

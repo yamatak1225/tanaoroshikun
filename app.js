@@ -1744,6 +1744,7 @@ function createDepartmentApprovalPdfData(approval) {
     confirmedAt: formatApprovalDateTime(approval.confirmedAt),
     countSummary: `対象 ${approval.targetCount || 0}件　読取済 ${approval.readCount || 0}件　未読取 ${approval.unreadCount || 0}件`,
     fileDate: todayInputValue(new Date(approval.confirmedAt)).replaceAll("-", ""),
+    tableTitle: "未確認SPDラベル",
     headers: APPROVAL_PDF_HEADERS,
     columnRatios: APPROVAL_PDF_COLUMN_RATIOS,
     emptyMessage: approval.unreadCount ? "" : "未確認SPDラベル：0件",
