@@ -16,6 +16,8 @@
   const TABLE_BORDER_WIDTH = 0.5;
   const COLUMN_RATIOS = [0.04, 0.18, 0.11, 0.18, 0.13, 0.10, 0.10, 0.09, 0.07];
   const DEFAULT_HEADERS = ["No.", "施設名 / 部署名", "商品コード", "商品名", "規格", "製品番号", "ラベルキー", "ラベル日付", "対応"];
+  const APPROVAL_COLUMN_RATIOS = [0.05, 0.12, 0.20, 0.16, 0.12, 0.13, 0.12, 0.10];
+  const APPROVAL_HEADERS = ["No.", "商品コード", "商品名", "規格", "製品番号", "ラベルキー", "ラベル日付", "対応"];
   let cachedFontBytesPromise = null;
 
   function textValue(value) {
@@ -32,7 +34,8 @@
 
   function buildPdfFilename(report) {
     const dateKey = textValue(report.fileDate).replace(/\D/g, "").slice(0, 8) || "日付未設定";
-    return `SPD棚卸_未確認ラベルリスト_${sanitizeFilenamePart(report.facilityName)}_${sanitizeFilenamePart(report.departmentName)}_${dateKey}.pdf`;
+    const reportName = report.reportType === "departmentApproval" ? "部署確認記録" : "未確認ラベルリスト";
+    return `SPD棚卸_${reportName}_${sanitizeFilenamePart(report.facilityName)}_${sanitizeFilenamePart(report.departmentName)}_${dateKey}.pdf`;
   }
 
   function wrapText(text, font, size, maxWidth) {
@@ -93,6 +96,18 @@
       color: colors.black
     });
 
+    if (report.reportType === "departmentApproval") {
+      const halfWidth = (width - PAGE_MARGIN * 2) / 2 - 8;
+      const rightX = PAGE_MARGIN + halfWidth + 16;
+      drawSummaryPair(page, font, colors, "施設名", report.facilityName, PAGE_MARGIN, top - 48, halfWidth);
+      drawSummaryPair(page, font, colors, "部署名", report.departmentName, rightX, top - 48, halfWidth);
+      drawSummaryPair(page, font, colors, "対象終了日", report.endDate, PAGE_MARGIN, top - 68, halfWidth);
+      drawSummaryPair(page, font, colors, "確認日時", report.confirmedAt, rightX, top - 68, halfWidth);
+      drawSummaryPair(page, font, colors, "確認者氏名", report.confirmedBy, PAGE_MARGIN, top - 88, halfWidth);
+      drawSummaryPair(page, font, colors, "件数", report.countSummary, rightX, top - 88, halfWidth);
+      return top - 108;
+    }
+
     const stampX = width - PAGE_MARGIN - STAMP_WIDTH;
     const stampHeaderHeight = 12;
     const stampHeight = stampHeaderHeight + STAMP_BODY_HEIGHT;
@@ -116,9 +131,9 @@
     return top - 112;
   }
 
-  function columnLayout(pageWidth) {
+  function columnLayout(pageWidth, ratios = COLUMN_RATIOS) {
     const tableWidth = pageWidth - PAGE_MARGIN * 2;
-    const widths = COLUMN_RATIOS.map((ratio) => tableWidth * ratio);
+    const widths = ratios.map((ratio) => tableWidth * ratio);
     const positions = [];
     let x = PAGE_MARGIN;
     widths.forEach((width) => {
@@ -183,9 +198,14 @@
       endDate: textValue(report.endDate),
       printedAt: textValue(report.printedAt),
       countSummary: textValue(report.countSummary),
+      reportType: textValue(report.reportType),
+      confirmedBy: textValue(report.confirmedBy),
+      confirmedAt: textValue(report.confirmedAt),
+      emptyMessage: textValue(report.emptyMessage),
       fileDate: textValue(report.fileDate),
       headers: (report.headers || DEFAULT_HEADERS).map(textValue),
-      rows: (report.rows || []).map((row) => DEFAULT_HEADERS.map((_, index) => textValue(row?.[index])))
+      columnRatios: (report.columnRatios || COLUMN_RATIOS).map(Number),
+      rows: (report.rows || []).map((row) => (report.headers || DEFAULT_HEADERS).map((_, index) => textValue(row?.[index])))
     };
   }
 
@@ -212,7 +232,7 @@
     if (!pdfLib?.PDFDocument || !pdfLib?.rgb) throw new Error("PDF生成ライブラリを読み込めません。");
     if (!fontkitRef) throw new Error("日本語フォント処理ライブラリを読み込めません。");
     const report = normalizeReport(inputReport || {});
-    if (report.headers.length !== DEFAULT_HEADERS.length) throw new Error("PDF一覧の列数が正しくありません。");
+    if (!report.headers.length || report.headers.length !== report.columnRatios.length || Math.abs(report.columnRatios.reduce((sum, value) => sum + value, 0) - 1) > 0.001) throw new Error("PDF一覧の列数または列幅が正しくありません。");
     const fontBytes = await loadFontBytes(options);
     const pdfDoc = await pdfLib.PDFDocument.create();
     pdfDoc.registerFontkit(fontkitRef);
@@ -221,12 +241,12 @@
     const font = await pdfDoc.embedFont(fontBytes, { subset: false });
     const fonts = { japanese: font, latin: await pdfDoc.embedFont(pdfLib.StandardFonts.Helvetica) };
     pdfDoc.setTitle(report.title);
-    pdfDoc.setSubject("棚卸くん 未確認ラベル帳票");
+    pdfDoc.setSubject(report.reportType === "departmentApproval" ? "棚卸くん 部署確認記録" : "棚卸くん 未確認ラベル帳票");
     pdfDoc.setCreator("棚卸くん / pdf-lib 1.17.1");
     pdfDoc.setProducer("棚卸くん");
 
     const [pageWidth, pageHeight] = A4_LANDSCAPE;
-    const layout = columnLayout(pageWidth);
+    const layout = columnLayout(pageWidth, report.columnRatios);
     let page = pdfDoc.addPage(A4_LANDSCAPE);
     let currentY = drawFirstPageHeader(page, font, report, pdfLib);
     const headerHeight = drawTableRow(page, currentY, report.headers, fonts, layout, pdfLib, { header: true });
@@ -244,6 +264,9 @@
       }
       currentY -= drawTableRow(page, currentY, row, fonts, layout, pdfLib);
     });
+    if (!report.rows.length && report.emptyMessage) {
+      drawBoldText(page, report.emptyMessage, { x: PAGE_MARGIN, y: currentY - 22, size: 11, font, color: pdfLib.rgb(0, 0, 0) });
+    }
 
     const bytes = await pdfDoc.save();
     return { bytes, fileName: buildPdfFilename(report), pageCount: pdfDoc.getPageCount() };
@@ -253,6 +276,8 @@
     A4_LANDSCAPE,
     DEFAULT_HEADERS,
     COLUMN_RATIOS,
+    APPROVAL_HEADERS,
+    APPROVAL_COLUMN_RATIOS,
     sanitizeFilenamePart,
     buildPdfFilename,
     wrapText,

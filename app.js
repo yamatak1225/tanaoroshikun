@@ -3,9 +3,12 @@
 const STORAGE_KEYS = { master: "inventory-kun-master-v2", state: "inventory-kun-state-v2" };
 const HISTORY_DB_NAME = "inventory-kun-history-v1";
 const HISTORY_STORE_NAME = "scanHistory";
+const DEPARTMENT_APPROVAL_STORE_NAME = "departmentApprovals";
 const REQUIRED_HEADERS = ["施設コード", "施設名称", "部署コード", "部署名称", "品名", "規格", "製品番号", "ラベルキー", "払出予定伝票日付", "エラーメッセージ"];
 const OPTIONAL_VALUE_HEADERS = new Set(["メーカー", "メーカー名", "品名", "規格", "製品番号"]);
 const PRINT_COLUMN_HEADERS = ["No.", "施設名 / 部署名", "商品コード", "商品名", "規格", "製品番号", "ラベルキー", "ラベル日付", "対応"];
+const APPROVAL_PDF_HEADERS = ["No.", "商品コード", "商品名", "規格", "製品番号", "ラベルキー", "ラベル日付", "対応"];
+const APPROVAL_PDF_COLUMN_RATIOS = [0.05, 0.12, 0.20, 0.16, 0.12, 0.13, 0.12, 0.10];
 const DEPARTMENT_SEPARATOR = "\u001f";
 const STATE_KEY_SEPARATOR = "|";
 
@@ -16,6 +19,7 @@ const state = {
   readLabelKeys: new Set(),
   confirmationMethods: new Map(),
   reissueLabelKeys: new Set(),
+  departmentApprovals: new Map(),
   savedFacilities: new Map(),
   reissueFilterActive: false,
   targetEndDate: "",
@@ -32,6 +36,7 @@ let completionSound = null;
 let historyDbPromise = null;
 let activePdfUrl = "";
 let pendingResetFacility = null;
+let activeDepartmentApproval = null;
 
 function normalizeHeader(value) { return String(value ?? "").replace(/^\uFEFF/, "").trim(); }
 function normalizeValue(value) { return String(value ?? "").trim(); }
@@ -192,6 +197,26 @@ function parseInventoryStateKey(value) {
   return { facilityCode: text.slice(0, separatorIndex), labelKey: text.slice(separatorIndex + 1) };
 }
 
+function departmentApprovalKey(facilityCode, departmentCode, targetEndDate) {
+  const parts = [normalizeValue(facilityCode), normalizeValue(departmentCode), normalizeValue(targetEndDate)];
+  return parts.every(Boolean) ? parts.join(STATE_KEY_SEPARATOR) : "";
+}
+
+function parseDepartmentApprovalKey(value) {
+  const parts = String(value ?? "").split(STATE_KEY_SEPARATOR);
+  return parts.length === 3 && parts.every(Boolean)
+    ? { facilityCode: parts[0], departmentCode: parts[1], targetEndDate: parts[2] }
+    : null;
+}
+
+function currentDepartmentApprovalKey(department = state.currentDepartment, targetEndDate = state.targetEndDate) {
+  return departmentApprovalKey(department?.facilityCode, department?.departmentCode, targetEndDate);
+}
+
+function getDepartmentApproval(department = state.currentDepartment, targetEndDate = state.targetEndDate) {
+  return state.departmentApprovals.get(currentDepartmentApprovalKey(department, targetEndDate)) || null;
+}
+
 function isRowRead(row) { return state.readLabelKeys.has(inventoryStateKeyForRow(row)); }
 function confirmationMethodForRow(row) { return state.confirmationMethods.get(inventoryStateKeyForRow(row)) || ""; }
 function isRowReissue(row) { return state.reissueLabelKeys.has(inventoryStateKeyForRow(row)); }
@@ -299,6 +324,9 @@ function getResetFacilities(rows = state.masterRows) {
   });
   const progressFacilityCodes = new Set([...state.readLabelKeys, ...state.confirmationMethods.keys(), ...state.reissueLabelKeys]
     .map(parseInventoryStateKey).filter(Boolean).map((identity) => identity.facilityCode));
+  state.departmentApprovals.forEach((approval) => {
+    if (approval.facilityCode) progressFacilityCodes.add(approval.facilityCode);
+  });
   progressFacilityCodes.forEach((facilityCode) => {
     if (facilities.has(facilityCode)) return;
     const savedFacility = state.savedFacilities.get(facilityCode);
@@ -313,11 +341,82 @@ function getTargetCounts() {
   return { target: targets.length, read, unread: targets.length - read };
 }
 
+function snapshotLabel(row) {
+  return {
+    facilityCode: row?.["施設コード"] || "",
+    facilityName: row?.["施設名称"] || "",
+    departmentCode: row?.["部署コード"] || "",
+    departmentName: row?.["部署名称"] || "",
+    productCode: row?.["商品コード"] || "",
+    productName: row?.["品名"] || "",
+    specification: row?.["規格"] || "",
+    productNumber: row?.["製品番号"] || "",
+    labelKey: row?.["ラベルキー"] || "",
+    labelDate: formatMasterDate(row?.["払出予定伝票日付"]),
+    reissue: isRowReissue(row)
+  };
+}
+
+function createDepartmentApprovalSnapshot(confirmedBy, now = new Date()) {
+  if (!state.currentDepartment) return { ok: false, message: "棚卸対象部署を選択してください。" };
+  const endDate = validateTargetEndDate();
+  if (!endDate.ok) return { ok: false, message: endDate.message };
+  const normalizedName = normalizeValue(confirmedBy);
+  if (!normalizedName) return { ok: false, message: "確認者氏名を入力してください。" };
+  const approvalKey = currentDepartmentApprovalKey();
+  if (state.departmentApprovals.has(approvalKey)) return { ok: false, message: "この部署はすでに部署確認済みです。" };
+  const counts = getTargetCounts();
+  const unreadLabels = getUnreadLabels().map(snapshotLabel);
+  const approval = {
+    approvalKey,
+    facilityCode: state.currentDepartment.facilityCode,
+    facilityName: state.currentDepartment.facilityName,
+    departmentCode: state.currentDepartment.departmentCode,
+    departmentName: state.currentDepartment.departmentName,
+    targetEndDate: state.targetEndDate,
+    targetCount: counts.target,
+    readCount: counts.read,
+    unreadCount: counts.unread,
+    confirmedBy: normalizedName,
+    confirmedAt: now.toISOString(),
+    unreadLabels
+  };
+  approval.contentSignature = departmentApprovalContentSignature(approval);
+  return { ok: true, approval };
+}
+
+function departmentApprovalContentSignature(value) {
+  const labels = (value?.unreadLabels || []).map((label) => ({
+    facilityCode: label.facilityCode || "", departmentCode: label.departmentCode || "", productCode: label.productCode || "",
+    productName: label.productName || "", specification: label.specification || "", productNumber: label.productNumber || "",
+    labelKey: label.labelKey || "", labelDate: label.labelDate || "", reissue: Boolean(label.reissue)
+  })).sort((left, right) => left.labelKey.localeCompare(right.labelKey, "ja"));
+  return JSON.stringify({ targetCount: Number(value?.targetCount || 0), readCount: Number(value?.readCount || 0), unreadCount: Number(value?.unreadCount || 0), labels });
+}
+
+function currentDepartmentApprovalSignature(department = state.currentDepartment) {
+  if (!department || !validateTargetEndDate().ok) return "";
+  const targets = getUniqueLabelRows(state.masterRows.filter((row) => isRowOnOrBeforeEndDate(row) && matchesDepartment(row, department)));
+  const unreadLabels = targets.filter((row) => !isRowRead(row)).map(snapshotLabel);
+  const readCount = targets.length - unreadLabels.length;
+  return departmentApprovalContentSignature({ targetCount: targets.length, readCount, unreadCount: unreadLabels.length, unreadLabels });
+}
+
+function isDepartmentApprovalOutdated(approval, department = state.currentDepartment) {
+  return Boolean(approval && department && approval.contentSignature !== currentDepartmentApprovalSignature(department));
+}
+
 function getDepartmentProgress(rows = state.masterRows) {
   return getEligibleDepartments(rows).map((department) => {
     const targets = getUniqueLabelRows(rows.filter((row) => isRowOnOrBeforeEndDate(row) && matchesDepartment(row, department)));
     const read = targets.filter(isRowRead).length;
-    return { ...department, target: targets.length, read, unread: targets.length - read, completed: targets.length > 0 && read === targets.length };
+    const approval = getDepartmentApproval(department);
+    return {
+      ...department, target: targets.length, read, unread: targets.length - read,
+      completed: targets.length > 0 && read === targets.length,
+      departmentApproved: Boolean(approval), approval,
+      approvalOutdated: isDepartmentApprovalOutdated(approval, department)
+    };
   });
 }
 
@@ -418,7 +517,7 @@ function isCompletionTransition(beforeCounts, afterCounts) {
   return Boolean(beforeCounts?.unread > 0 && afterCounts?.target > 0 && afterCounts.unread === 0);
 }
 
-function resetInventoryForFacility(facility) {
+function resetInventoryForFacility(facility, options = {}) {
   const normalizedFacility = {
     facilityCode: normalizeValue(facility?.facilityCode),
     facilityName: normalizeValue(facility?.facilityName) || normalizeValue(facility?.facilityCode)
@@ -429,6 +528,7 @@ function resetInventoryForFacility(facility) {
 
   let readResetCount = 0;
   let reissueResetCount = 0;
+  const approvalRecords = options.approvalRecords || [...state.departmentApprovals.values()].filter((approval) => approval.facilityCode === normalizedFacility.facilityCode);
   [...state.readLabelKeys].forEach((stateKey) => {
     if (parseInventoryStateKey(stateKey)?.facilityCode !== normalizedFacility.facilityCode) return;
     if (state.readLabelKeys.delete(stateKey)) readResetCount += 1;
@@ -440,6 +540,7 @@ function resetInventoryForFacility(facility) {
   [...state.reissueLabelKeys].forEach((stateKey) => {
     if (parseInventoryStateKey(stateKey)?.facilityCode === normalizedFacility.facilityCode && state.reissueLabelKeys.delete(stateKey)) reissueResetCount += 1;
   });
+  approvalRecords.forEach((approval) => state.departmentApprovals.delete(approval.approvalKey));
   state.reissueFilterActive = false;
   saveState();
   const targetCount = new Set(state.masterRows.filter((row) => row["施設コード"] === normalizedFacility.facilityCode).map((row) => inventoryStateKeyForRow(row))).size;
@@ -448,7 +549,10 @@ function resetInventoryForFacility(facility) {
     facility: normalizedFacility,
     targetCount,
     readResetCount,
-    reissueResetCount
+    reissueResetCount,
+    approvalResetCount: approvalRecords.length,
+    approvalRecords,
+    approvalKeys: approvalRecords.map((approval) => approval.approvalKey)
   };
 }
 
@@ -467,6 +571,16 @@ function formatMasterDate(value) {
 function formatLocalDateTime(value) {
   const date = value instanceof Date ? value : new Date(value);
   return Number.isNaN(date.getTime()) ? "―" : new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "medium" }).format(date);
+}
+
+function formatApprovalDateTime(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "―";
+  const parts = new Intl.DateTimeFormat("ja-JP", {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false
+  }).formatToParts(date);
+  const part = (type) => parts.find((item) => item.type === type)?.value || "";
+  return `${part("year")}/${part("month")}/${part("day")} ${part("hour")}:${part("minute")}`;
 }
 
 function createHistoryRecord(scanResult, rawValue, now = new Date()) {
@@ -495,7 +609,7 @@ function openHistoryDb(indexedDbRef = globalThis.indexedDB) {
   if (!indexedDbRef) return Promise.resolve(null);
   if (historyDbPromise) return historyDbPromise;
   historyDbPromise = new Promise((resolve, reject) => {
-    const request = indexedDbRef.open(HISTORY_DB_NAME, 1);
+    const request = indexedDbRef.open(HISTORY_DB_NAME, 2);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(HISTORY_STORE_NAME)) {
@@ -503,11 +617,85 @@ function openHistoryDb(indexedDbRef = globalThis.indexedDB) {
         store.createIndex("eventAt", "eventAt");
         store.createIndex("result", "result");
       }
+      if (!db.objectStoreNames.contains(DEPARTMENT_APPROVAL_STORE_NAME)) {
+        const store = db.createObjectStore(DEPARTMENT_APPROVAL_STORE_NAME, { keyPath: "approvalKey" });
+        store.createIndex("facilityCode", "facilityCode");
+        store.createIndex("confirmedAt", "confirmedAt");
+      }
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      request.result.onversionchange = () => request.result.close();
+      resolve(request.result);
+    };
     request.onerror = () => reject(request.error);
   });
   return historyDbPromise;
+}
+
+async function loadDepartmentApprovals() {
+  try {
+    const db = await openHistoryDb();
+    if (!db) return state.departmentApprovals;
+    const approvals = await new Promise((resolve, reject) => {
+      const request = db.transaction(DEPARTMENT_APPROVAL_STORE_NAME, "readonly").objectStore(DEPARTMENT_APPROVAL_STORE_NAME).getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+    });
+    state.departmentApprovals = new Map(approvals.filter((approval) => approval?.approvalKey).map((approval) => [approval.approvalKey, approval]));
+    registerSavedFacilities(approvals.map((approval) => ({ facilityCode: approval.facilityCode, facilityName: approval.facilityName })));
+  } catch (error) {
+    console.error("部署確認記録を読み込めません。", error);
+  }
+  return state.departmentApprovals;
+}
+
+async function saveDepartmentApproval(approval) {
+  if (!approval?.approvalKey) throw new Error("部署確認記録の識別キーがありません。");
+  if (state.departmentApprovals.has(approval.approvalKey)) throw new Error("この部署はすでに部署確認済みです。");
+  const db = await openHistoryDb();
+  if (!db) throw new Error("部署確認記録を端末へ保存できません。IndexedDBを利用できるブラウザで開いてください。");
+  await new Promise((resolve, reject) => {
+    const request = db.transaction(DEPARTMENT_APPROVAL_STORE_NAME, "readwrite").objectStore(DEPARTMENT_APPROVAL_STORE_NAME).add(approval);
+    request.onsuccess = resolve;
+    request.onerror = () => reject(request.error);
+  });
+  state.departmentApprovals.set(approval.approvalKey, approval);
+  registerSavedFacilities([{ facilityCode: approval.facilityCode, facilityName: approval.facilityName }]);
+  saveState();
+  return approval;
+}
+
+async function deleteDepartmentApproval(approvalKey) {
+  const approval = state.departmentApprovals.get(approvalKey);
+  if (!approval) return false;
+  const db = await openHistoryDb();
+  if (!db) throw new Error("部署確認記録を端末から削除できません。");
+  await new Promise((resolve, reject) => {
+    const request = db.transaction(DEPARTMENT_APPROVAL_STORE_NAME, "readwrite").objectStore(DEPARTMENT_APPROVAL_STORE_NAME).delete(approvalKey);
+    request.onsuccess = resolve;
+    request.onerror = () => reject(request.error);
+  });
+  state.departmentApprovals.delete(approvalKey);
+  return true;
+}
+
+async function deleteDepartmentApprovalsForFacility(facilityCode, approvalKeys = null) {
+  const normalizedCode = normalizeValue(facilityCode);
+  const keys = approvalKeys || [...state.departmentApprovals.values()]
+    .filter((approval) => approval.facilityCode === normalizedCode).map((approval) => approval.approvalKey);
+  if (!keys.length) return 0;
+  const db = await openHistoryDb();
+  if (!db) throw new Error("部署確認記録を端末から削除できません。");
+  await new Promise((resolve, reject) => {
+    const transaction = db.transaction(DEPARTMENT_APPROVAL_STORE_NAME, "readwrite");
+    const store = transaction.objectStore(DEPARTMENT_APPROVAL_STORE_NAME);
+    keys.forEach((key) => store.delete(key));
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error || new Error("部署確認記録の削除を中断しました。"));
+  });
+  keys.forEach((key) => state.departmentApprovals.delete(key));
+  return keys.length;
 }
 
 async function saveScanHistory(record) {
@@ -558,6 +746,7 @@ async function clearScanHistory() {
 function createOutputRecord(row) {
   const labelKey = row["ラベルキー"];
   const read = isRowRead(row);
+  const departmentApproval = state.departmentApprovals.get(departmentApprovalKey(row["施設コード"], row["部署コード"], state.targetEndDate));
   return {
     productCode: row["商品コード"] || "",
     manufacturerName: row["メーカー名"] || row["メーカー"] || "",
@@ -574,7 +763,10 @@ function createOutputRecord(row) {
     departmentName: row["部署名称"] || "",
     readStatus: read ? "読取済" : "未読取",
     confirmationMethod: read ? confirmationMethodForRow(row) : "",
-    reissueStatus: isRowReissue(row) ? "再発行" : ""
+    reissueStatus: isRowReissue(row) ? "再発行" : "",
+    departmentApprovalStatus: departmentApproval ? "確認済" : "",
+    departmentApprover: departmentApproval?.confirmedBy || "",
+    departmentApprovedAt: departmentApproval ? formatApprovalDateTime(departmentApproval.confirmedAt) : ""
   };
 }
 
@@ -602,7 +794,8 @@ function buildOutputCsv(records) {
     ["商品コード", "productCode"], ["メーカー名", "manufacturerName"], ["商品名", "productName"], ["規格", "specification"],
     ["製品番号", "productNumber"], ["ラベルキー", "labelKey"], ["ラベル日付", "labelDate"], ["有効期限", "expirationDate"],
     ["ロット番号", "lotNumber"], ["施設コード", "facilityCode"], ["施設名", "facilityName"], ["部署コード", "departmentCode"],
-    ["部署名", "departmentName"], ["読取済区分", "readStatus"], ["確認方法", "confirmationMethod"], ["ラベル再発行区分", "reissueStatus"]
+    ["部署名", "departmentName"], ["読取済区分", "readStatus"], ["確認方法", "confirmationMethod"], ["ラベル再発行区分", "reissueStatus"],
+    ["部署確認区分", "departmentApprovalStatus"], ["部署確認者", "departmentApprover"], ["部署確認日時", "departmentApprovedAt"]
   ];
   return [columns.map(([label]) => csvEscape(label)).join(","), ...records.map((record) => columns.map(([, key]) => csvEscape(record[key])).join(","))].join("\r\n");
 }
@@ -857,9 +1050,12 @@ function cacheElements() {
     "resetFacilitySelect", "resetInventoryButton", "resetInventoryMessage", "resetConfirmDialog", "resetConfirmMessage", "cancelResetButton", "executeResetButton",
     "targetEndDate", "periodError", "departmentSelect", "overallStatusButton", "currentFacility", "currentDepartment", "currentDepartmentCode", "targetCount", "readCount", "unreadCount",
     "resultPanel", "modeStatus", "resultTitle", "resultMessage", "resultDetails", "scannerBufferStatus", "manualScanInput", "manualScanButton",
-    "printPreviewButton", "reissueExtractButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadCountGrid", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadActionMessage", "unreadList",
+    "printPreviewButton", "departmentApprovalButton", "departmentApprovalStatus", "reissueExtractButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadCountGrid", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadActionMessage", "unreadList",
     "outputEndDate", "outputFacility", "outputDepartment", "outputReadStatus", "outputSearch", "outputCount", "outputList", "exportDataButton", "outputMessage",
-    "overallStatusDialog", "overallStatusCloseButton", "overallEndDate", "overallTargetCount", "overallReadCount", "overallUnreadCount", "overallCompletedCount", "overallDepartmentList"
+    "overallStatusDialog", "overallStatusCloseButton", "overallEndDate", "overallTargetCount", "overallReadCount", "overallUnreadCount", "overallCompletedCount", "overallApprovedCount", "overallDepartmentList",
+    "departmentApprovalDialog", "departmentApprovalCloseButton", "departmentApprovalDepartment", "departmentApprovalEndDate", "departmentApprovalTargetCount", "departmentApprovalReadCount", "departmentApprovalUnreadCount",
+    "departmentApprovalExistingMessage", "departmentApprovalUpdateWarning", "departmentApprovalLabelList", "departmentApprovalInputArea", "departmentApproverName", "departmentApprovalCheck", "departmentApprovalStatement", "departmentApprovalMessage",
+    "executeDepartmentApprovalButton", "departmentApprovalRecordActions", "departmentApprovalPdfButton", "cancelDepartmentApprovalButton"
   ];
   elements = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 }
@@ -962,12 +1158,20 @@ function openResetConfirmDialog() {
   else pendingResetFacility = null;
 }
 
-function executeFacilityReset() {
+async function executeFacilityReset() {
   const facility = pendingResetFacility;
   if (!facility) return;
-  const result = resetInventoryForFacility(facility);
+  const approvalRecords = [...state.departmentApprovals.values()].filter((approval) => approval.facilityCode === normalizeValue(facility.facilityCode));
   pendingResetFacility = null;
   if (elements.resetConfirmDialog.open) elements.resetConfirmDialog.close();
+  try {
+    await deleteDepartmentApprovalsForFacility(facility.facilityCode, approvalRecords.map((approval) => approval.approvalKey));
+  } catch (error) {
+    elements.resetInventoryMessage.textContent = `部署確認記録を削除できなかったため、リセットを完了できませんでした：${error.message}`;
+    playAlertSound();
+    return;
+  }
+  const result = resetInventoryForFacility(facility, { approvalRecords });
   if (!result.ok) {
     elements.resetInventoryMessage.textContent = result.message;
     playAlertSound();
@@ -976,7 +1180,7 @@ function executeFacilityReset() {
   renderAll();
   elements.resetFacilitySelect.value = facilityKey(result.facility);
   elements.resetInventoryButton.disabled = false;
-  elements.resetInventoryMessage.textContent = `${result.facility.facilityName}の棚卸情報をリセットしました。他施設の棚卸情報は維持されています。`;
+  elements.resetInventoryMessage.textContent = `${result.facility.facilityName}の棚卸情報と部署確認 ${result.approvalResetCount}件をリセットしました。他施設の棚卸情報は維持されています。部署確認記録も変更していません。`;
   if (state.currentDepartment?.facilityCode === result.facility.facilityCode) {
     const counts = getTargetCounts();
     showResult("idle", "棚卸情報をリセットしました", `${result.facility.facilityName}の棚卸を最初から開始できます。未読取 ${counts.unread}件`);
@@ -1024,6 +1228,26 @@ function renderCounts() {
   elements.unreadRemainingCount.textContent = counts.unread;
 }
 
+function renderDepartmentApprovalStatus() {
+  const approval = getDepartmentApproval();
+  elements.departmentApprovalStatus.replaceChildren();
+  elements.departmentApprovalStatus.hidden = !approval;
+  if (!approval) return;
+  const title = document.createElement("strong");
+  title.textContent = "部署確認済";
+  const person = document.createElement("p");
+  person.textContent = `確認者：${approval.confirmedBy || ""}`;
+  const date = document.createElement("p");
+  date.textContent = `確認日時：${formatApprovalDateTime(approval.confirmedAt)}`;
+  elements.departmentApprovalStatus.append(title, person, date);
+  if (isDepartmentApprovalOutdated(approval)) {
+    const warning = document.createElement("p");
+    warning.className = "department-approval-warning";
+    warning.textContent = "部署確認後に棚卸対象データが更新されています。";
+    elements.departmentApprovalStatus.append(warning);
+  }
+}
+
 function renderOverallStatus() {
   if (elements.overallStatusDialog.hidden) return;
   const progress = getOverallProgress();
@@ -1032,6 +1256,8 @@ function renderOverallStatus() {
   elements.overallReadCount.textContent = progress.read;
   elements.overallUnreadCount.textContent = progress.unread;
   elements.overallCompletedCount.textContent = `${progress.completedDepartments} / ${progress.totalDepartments}`;
+  const approvedDepartments = progress.departments.filter((department) => department.departmentApproved).length;
+  elements.overallApprovedCount.textContent = `${approvedDepartments} / ${progress.totalDepartments}`;
   elements.overallDepartmentList.replaceChildren();
   if (!progress.departments.length) {
     const empty = document.createElement("p");
@@ -1064,7 +1290,12 @@ function renderOverallStatus() {
       value.textContent = text;
       counts.append(value);
     });
-    button.append(heading, counts);
+    const approvalStatus = document.createElement("span");
+    approvalStatus.className = `overall-department-approval${department.departmentApproved ? " is-approved" : ""}${department.approvalOutdated ? " is-outdated" : ""}`;
+    approvalStatus.textContent = department.departmentApproved
+      ? `部署確認済：${department.approval.confirmedBy || ""}（${formatApprovalDateTime(department.approval.confirmedAt)}）${department.approvalOutdated ? "／確認後更新あり" : ""}`
+      : "部署未確認";
+    button.append(heading, counts, approvalStatus);
     elements.overallDepartmentList.append(button);
   });
 }
@@ -1081,6 +1312,154 @@ function closeOverallStatus() {
   elements.overallStatusDialog.hidden = true;
   document.body.classList.remove("has-modal");
   elements.overallStatusButton.focus();
+}
+
+function createDepartmentApprovalLabelItem(label, index) {
+  const article = document.createElement("article");
+  article.className = "department-approval-label";
+  const heading = document.createElement("h4");
+  heading.textContent = `${index + 1}. ${label.productName || ""}`;
+  const specification = document.createElement("p");
+  specification.textContent = `規格：${label.specification || ""}`;
+  const product = document.createElement("p");
+  product.textContent = `商品コード：${label.productCode || ""}　製品番号：${label.productNumber || ""}`;
+  const key = document.createElement("p");
+  key.className = "item-key";
+  key.textContent = `ラベルキー：${label.labelKey || ""}`;
+  const date = document.createElement("p");
+  date.textContent = `ラベル日付：${label.labelDate || ""}`;
+  article.append(heading, specification, product, key, date);
+  if (label.reissue) {
+    const reissue = document.createElement("span");
+    reissue.className = "department-approval-reissue";
+    reissue.textContent = "ラベル再発行";
+    article.append(reissue);
+  }
+  return article;
+}
+
+function renderDepartmentApprovalDialog() {
+  const approval = activeDepartmentApproval;
+  if (!approval) return;
+  const existing = Boolean(state.departmentApprovals.get(approval.approvalKey));
+  elements.departmentApprovalDepartment.textContent = `${approval.facilityName || ""} / ${approval.departmentName || ""}`;
+  elements.departmentApprovalEndDate.textContent = `対象終了日：${formatDateForDisplay(approval.targetEndDate)}`;
+  elements.departmentApprovalTargetCount.textContent = approval.targetCount;
+  elements.departmentApprovalReadCount.textContent = approval.readCount;
+  elements.departmentApprovalUnreadCount.textContent = approval.unreadCount;
+  elements.departmentApprovalLabelList.replaceChildren();
+  if (!approval.unreadLabels.length) {
+    const zero = document.createElement("p");
+    zero.className = "department-approval-zero";
+    zero.textContent = "未確認SPDラベルは0件です";
+    elements.departmentApprovalLabelList.append(zero);
+  } else {
+    approval.unreadLabels.forEach((label, index) => elements.departmentApprovalLabelList.append(createDepartmentApprovalLabelItem(label, index)));
+  }
+  elements.departmentApprovalExistingMessage.hidden = !existing;
+  elements.departmentApprovalExistingMessage.textContent = existing
+    ? `この部署はすでに部署確認済みです。\n確認者：${approval.confirmedBy || ""}\n確認日時：${formatApprovalDateTime(approval.confirmedAt)}` : "";
+  elements.departmentApprovalUpdateWarning.hidden = !existing || !isDepartmentApprovalOutdated(approval, state.currentDepartment);
+  elements.departmentApprovalInputArea.hidden = existing;
+  elements.departmentApprovalRecordActions.hidden = !existing;
+  elements.departmentApprovalStatement.textContent = approval.unreadCount
+    ? "上記の未確認SPDラベルについて、所在状況を確認しました。"
+    : "棚卸対象ラベルについて確認しました。";
+}
+
+function openDepartmentApprovalDialog() {
+  if (!state.currentDepartment) {
+    elements.unreadActionMessage.textContent = "棚卸対象部署を選択してください。";
+    playAlertSound();
+    return;
+  }
+  const endDate = validateTargetEndDate();
+  if (!endDate.ok) {
+    elements.unreadActionMessage.textContent = endDate.message;
+    playAlertSound();
+    return;
+  }
+  const existing = getDepartmentApproval();
+  if (existing) activeDepartmentApproval = existing;
+  else {
+    const counts = getTargetCounts();
+    activeDepartmentApproval = {
+      approvalKey: currentDepartmentApprovalKey(),
+      ...state.currentDepartment,
+      targetEndDate: state.targetEndDate,
+      targetCount: counts.target,
+      readCount: counts.read,
+      unreadCount: counts.unread,
+      unreadLabels: getUnreadLabels().map(snapshotLabel)
+    };
+  }
+  elements.departmentApproverName.value = "";
+  elements.departmentApprovalCheck.checked = false;
+  elements.departmentApprovalMessage.textContent = "";
+  renderDepartmentApprovalDialog();
+  elements.departmentApprovalDialog.hidden = false;
+  document.body.classList.add("has-modal");
+  (existing ? elements.departmentApprovalPdfButton : elements.departmentApproverName).focus();
+}
+
+function closeDepartmentApprovalDialog() {
+  elements.departmentApprovalDialog.hidden = true;
+  activeDepartmentApproval = null;
+  document.body.classList.remove("has-modal");
+  elements.departmentApprovalButton.focus();
+}
+
+async function executeDepartmentApproval() {
+  const confirmedBy = normalizeValue(elements.departmentApproverName.value);
+  if (!confirmedBy) {
+    elements.departmentApprovalMessage.textContent = "確認者氏名を入力してください。";
+    elements.departmentApproverName.focus();
+    return;
+  }
+  if (!elements.departmentApprovalCheck.checked) {
+    elements.departmentApprovalMessage.textContent = "確認内容にチェックしてください。";
+    elements.departmentApprovalCheck.focus();
+    return;
+  }
+  const created = createDepartmentApprovalSnapshot(confirmedBy);
+  if (!created.ok) {
+    elements.departmentApprovalMessage.textContent = created.message;
+    playAlertSound();
+    return;
+  }
+  elements.executeDepartmentApprovalButton.disabled = true;
+  elements.departmentApprovalMessage.textContent = "部署確認記録を端末へ保存しています。";
+  try {
+    activeDepartmentApproval = await saveDepartmentApproval(created.approval);
+    renderDepartmentApprovalDialog();
+    renderDepartmentApprovalStatus();
+    renderOverallStatus();
+    renderOutputData();
+    elements.unreadActionMessage.textContent = "部署確認記録を保存しました。";
+    playSuccessSound();
+  } catch (error) {
+    elements.departmentApprovalMessage.textContent = `部署確認記録を保存できませんでした：${error.message}`;
+    playAlertSound();
+  } finally {
+    elements.executeDepartmentApprovalButton.disabled = false;
+  }
+}
+
+async function cancelCurrentDepartmentApproval() {
+  const approval = activeDepartmentApproval;
+  if (!approval || !state.departmentApprovals.has(approval.approvalKey)) return;
+  if (!confirm(`${approval.facilityName} / ${approval.departmentName}の部署確認記録を取消します。よろしいですか？`)) return;
+  try {
+    await deleteDepartmentApproval(approval.approvalKey);
+    closeDepartmentApprovalDialog();
+    renderDepartmentApprovalStatus();
+    renderOverallStatus();
+    renderOutputData();
+    elements.unreadActionMessage.textContent = "選択中の部署確認記録だけを取消しました。他部署・他施設の記録は変更していません。";
+  } catch (error) {
+    elements.departmentApprovalMessage.textContent = `部署確認記録を取消できませんでした：${error.message}`;
+    playAlertSound();
+  }
 }
 
 function selectDepartmentForInventory(selected) {
@@ -1160,6 +1539,7 @@ function renderUnreadList() {
   const reissueMode = state.reissueFilterActive;
   const unread = reissueMode ? getReissueTargetLabels() : getUnreadLabels();
   const counts = getTargetCounts();
+  renderDepartmentApprovalStatus();
   elements.unreadList.replaceChildren();
   elements.reissueExtractButton.classList.toggle("is-active", reissueMode);
   elements.reissueExtractButton.setAttribute("aria-pressed", String(reissueMode));
@@ -1283,9 +1663,9 @@ function handleGlobalKeydown(event) {
   const ignored = [
     elements.manualScanInput, elements.targetEndDate, elements.masterFile,
     elements.outputSearch, elements.outputFacility, elements.outputDepartment, elements.outputReadStatus,
-    elements.departmentSelect, elements.resetFacilitySelect
+    elements.departmentSelect, elements.resetFacilitySelect, elements.departmentApproverName, elements.departmentApprovalCheck
   ];
-  if (ignored.includes(event.target) || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (!elements.departmentApprovalDialog.hidden || ignored.includes(event.target) || event.ctrlKey || event.metaKey || event.altKey) return;
   if (event.key === "Enter") {
     if (state.scannerBuffer) {
       event.preventDefault();
@@ -1349,6 +1729,28 @@ function createPdfReportData(now = new Date()) {
     fileDate: todayInputValue().replaceAll("-", ""),
     headers: PRINT_COLUMN_HEADERS,
     rows: unread.map(getPrintRowValues)
+  };
+}
+
+function createDepartmentApprovalPdfData(approval) {
+  if (!approval?.approvalKey) return null;
+  return {
+    reportType: "departmentApproval",
+    title: "SPD棚卸　部署確認記録",
+    facilityName: approval.facilityName || "",
+    departmentName: approval.departmentName || "",
+    endDate: formatDateForDisplay(approval.targetEndDate),
+    confirmedBy: approval.confirmedBy || "",
+    confirmedAt: formatApprovalDateTime(approval.confirmedAt),
+    countSummary: `対象 ${approval.targetCount || 0}件　読取済 ${approval.readCount || 0}件　未読取 ${approval.unreadCount || 0}件`,
+    fileDate: todayInputValue(new Date(approval.confirmedAt)).replaceAll("-", ""),
+    headers: APPROVAL_PDF_HEADERS,
+    columnRatios: APPROVAL_PDF_COLUMN_RATIOS,
+    emptyMessage: approval.unreadCount ? "" : "未確認SPDラベル：0件",
+    rows: (approval.unreadLabels || []).map((label, index) => [
+      String(index + 1), label.productCode || "", label.productName || "", label.specification || "", label.productNumber || "",
+      label.labelKey || "", label.labelDate || "", label.reissue ? "ラベル再発行" : ""
+    ])
   };
 }
 
@@ -1424,6 +1826,44 @@ async function generateAndOpenPdf(previewWindow = null) {
   }
 }
 
+async function generateAndOpenDepartmentApprovalPdf(previewWindow = null, approval = activeDepartmentApproval) {
+  const report = createDepartmentApprovalPdfData(approval);
+  if (!report) {
+    previewWindow?.close();
+    elements.departmentApprovalMessage.textContent = "承認記録PDFの生成に必要な保存済み記録がありません。";
+    return false;
+  }
+  if (!globalThis.InventoryPdf?.generateInventoryPdf || !previewWindow || previewWindow.closed) {
+    previewWindow?.close();
+    elements.departmentApprovalExistingMessage.textContent = "承認記録PDFの表示先を開けません。ブラウザのポップアップ設定を確認してください。";
+    playAlertSound();
+    return false;
+  }
+  const originalLabel = elements.departmentApprovalPdfButton.textContent;
+  elements.departmentApprovalPdfButton.disabled = true;
+  elements.departmentApprovalPdfButton.textContent = "PDF生成中…";
+  try {
+    const result = await globalThis.InventoryPdf.generateInventoryPdf(report, {
+      fontUrl: new URL("./vendor/NotoSansCJKjp-Regular.ttf", document.baseURI).href
+    });
+    const pdfBlob = createPdfBlob(result.bytes);
+    const pdfUrl = URL.createObjectURL(pdfBlob);
+    if (!pdfUrl) throw new Error("PDF表示用URLを生成できません。");
+    if (activePdfUrl) URL.revokeObjectURL(activePdfUrl);
+    activePdfUrl = pdfUrl;
+    displayPdfUrl(previewWindow, pdfUrl);
+    return true;
+  } catch (error) {
+    if (previewWindow && !previewWindow.closed) previewWindow.close();
+    elements.departmentApprovalExistingMessage.textContent = `承認記録PDFの生成または表示に失敗しました：${error.message}`;
+    playAlertSound();
+    return false;
+  } finally {
+    elements.departmentApprovalPdfButton.textContent = originalLabel;
+    elements.departmentApprovalPdfButton.disabled = false;
+  }
+}
+
 function bindEvents() {
   document.querySelectorAll(".tab-button").forEach((button) => button.addEventListener("click", () => switchSection(button.dataset.section)));
 
@@ -1484,6 +1924,10 @@ function bindEvents() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    if (!elements.departmentApprovalDialog.hidden) {
+      closeDepartmentApprovalDialog();
+      return;
+    }
     if (!elements.overallStatusDialog.hidden) closeOverallStatus();
   });
 
@@ -1505,7 +1949,7 @@ function bindEvents() {
   });
   elements.resetInventoryButton.addEventListener("click", openResetConfirmDialog);
   elements.cancelResetButton.addEventListener("click", closeResetConfirmDialog);
-  elements.executeResetButton.addEventListener("click", executeFacilityReset);
+  elements.executeResetButton.addEventListener("click", () => { void executeFacilityReset(); });
   elements.resetConfirmDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     closeResetConfirmDialog();
@@ -1517,6 +1961,21 @@ function bindEvents() {
     const previewWindow = openPdfLoadingWindow();
     void generateAndOpenPdf(previewWindow);
   });
+  elements.departmentApprovalButton.addEventListener("click", openDepartmentApprovalDialog);
+  elements.departmentApprovalCloseButton.addEventListener("click", closeDepartmentApprovalDialog);
+  elements.departmentApprovalDialog.addEventListener("click", (event) => {
+    if (event.target === elements.departmentApprovalDialog) closeDepartmentApprovalDialog();
+  });
+  elements.executeDepartmentApprovalButton.addEventListener("click", () => { void executeDepartmentApproval(); });
+  elements.departmentApproverName.addEventListener("input", () => { elements.departmentApprovalMessage.textContent = ""; });
+  elements.departmentApprovalCheck.addEventListener("change", () => { elements.departmentApprovalMessage.textContent = ""; });
+  elements.departmentApprovalPdfButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const previewWindow = openPdfLoadingWindow();
+    void generateAndOpenDepartmentApprovalPdf(previewWindow);
+  });
+  elements.cancelDepartmentApprovalButton.addEventListener("click", () => { void cancelCurrentDepartmentApproval(); });
   elements.reissueExtractButton.addEventListener("click", () => {
     state.reissueFilterActive = !state.reissueFilterActive;
     elements.unreadActionMessage.textContent = state.reissueFilterActive ? "全部署の再発行対象ラベルを表示しています。" : "通常の未読取一覧へ戻りました。";
@@ -1575,8 +2034,8 @@ async function init() {
   restoreState();
   initAudio();
   bindEvents();
+  await Promise.all([loadDepartmentApprovals(), loadScanHistory()]);
   renderAll();
-  await loadScanHistory();
   if (state.currentDepartment) showResult("idle", "読取待機中", `${state.currentDepartment.facilityName} / ${state.currentDepartment.departmentName} のSPDラベルを読み取ってください。`);
   document.body.dataset.appReady = "true";
 }
@@ -1607,11 +2066,12 @@ if (typeof document !== "undefined") {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    REQUIRED_HEADERS, OPTIONAL_VALUE_HEADERS, PRINT_COLUMN_HEADERS, state, normalizeLabelKey, splitTsvRecords, isValidDateKey, parseTsv, buildLabelKey, normalizeQr,
-    getExpectedCenterCode, departmentKey, departmentFromRow, facilityKey, facilityFromRow, inventoryStateKey, inventoryStateKeyForRow, parseInventoryStateKey, rebuildIndexes, findLabel, parseDateInput, validateTargetEndDate,
+    REQUIRED_HEADERS, OPTIONAL_VALUE_HEADERS, PRINT_COLUMN_HEADERS, APPROVAL_PDF_HEADERS, APPROVAL_PDF_COLUMN_RATIOS, state, normalizeLabelKey, splitTsvRecords, isValidDateKey, parseTsv, buildLabelKey, normalizeQr,
+    getExpectedCenterCode, departmentKey, departmentFromRow, facilityKey, facilityFromRow, inventoryStateKey, inventoryStateKeyForRow, parseInventoryStateKey, departmentApprovalKey, parseDepartmentApprovalKey, currentDepartmentApprovalKey, getDepartmentApproval, rebuildIndexes, findLabel, parseDateInput, validateTargetEndDate,
     isRowOnOrBeforeEndDate, matchesDepartment, getEligibleDepartments, getUniqueLabelRows, getCurrentTargetLabels, getUnreadLabels,
     getTargetCounts, getDepartmentProgress, getOverallProgress, getOutputTargetLabels, getResetFacilities, getReissueTargetLabels, getOutputRecords, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
-    isCompletionTransition, resetInventoryForFacility, migrateStoredStateKey, getPrintRowValues, createPdfReportData, todayInputValue, formatDateForDisplay, formatMasterDate, applyMasterData, saveState, restoreState, createHistoryRecord,
+    isCompletionTransition, resetInventoryForFacility, migrateStoredStateKey, getPrintRowValues, createPdfReportData, createDepartmentApprovalPdfData, todayInputValue, formatDateForDisplay, formatMasterDate, formatApprovalDateTime, applyMasterData, saveState, restoreState, createHistoryRecord,
+    snapshotLabel, createDepartmentApprovalSnapshot, departmentApprovalContentSignature, currentDepartmentApprovalSignature, isDepartmentApprovalOutdated,
     createOutputRecord, filterOutputRecords, buildOutputCsv, openPdfLoadingWindow, createPdfBlob, displayPdfUrl, removeLegacyPwaArtifacts
   };
 }

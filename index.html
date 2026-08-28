@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>棚卸くん</title>
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
-  <link rel="stylesheet" href="style.css?v=20260827-16">
+  <link rel="stylesheet" href="style.css?v=20260828-17">
 </head>
 <body>
   <header class="app-header">
@@ -72,7 +72,7 @@
     <section id="unreadSection" class="screen" aria-labelledby="unreadHeading">
       <div class="section-heading-row">
         <div><p class="eyebrow">棚卸が未完了のSPDラベル</p><h2 id="unreadHeading">未読取一覧</h2></div>
-        <div class="section-actions"><button id="printPreviewButton" class="button button--secondary" type="button" disabled>印刷プレビュー</button><button id="reissueExtractButton" class="button button--secondary reissue-extract-button" type="button" aria-pressed="false" disabled>再発行ラベル抽出</button></div>
+        <div class="section-actions"><button id="printPreviewButton" class="button button--secondary" type="button" disabled>印刷プレビュー</button><button id="departmentApprovalButton" class="button department-approval-button" type="button">部署確認</button><button id="reissueExtractButton" class="button button--secondary reissue-extract-button" type="button" aria-pressed="false" disabled>再発行ラベル抽出</button></div>
       </div>
       <div class="filter-summary"><p id="unreadPeriodLabel">対象終了日：―</p><p id="unreadDepartmentLabel">対象部署：指定なし</p></div>
       <div id="unreadCountGrid" class="count-grid">
@@ -81,6 +81,7 @@
         <div class="count-card count-card--unread"><span>未読取</span><strong id="unreadRemainingCount">0</strong></div>
       </div>
       <p id="unreadActionMessage" class="inline-message" aria-live="polite"></p>
+      <section id="departmentApprovalStatus" class="department-approval-status" aria-live="polite" hidden></section>
       <div id="unreadList" class="unread-list"></div>
     </section>
 
@@ -116,7 +117,7 @@
       </dl><p id="masterSummary" class="visually-hidden">在庫差異.tsvを読み込んでください。</p></section>
       <section class="card inventory-reset-card">
         <h3>棚卸情報リセット</h3>
-        <p class="help-text">選択した施設の読取済・手動確認・再発行状態だけを初期化します。在庫差異.tsvのマスターは削除しません。</p>
+        <p class="help-text">選択した施設の読取済・手動確認・再発行状態・部署確認記録だけを初期化します。在庫差異.tsvのマスターと他施設の情報は削除しません。</p>
         <label for="resetFacilitySelect">対象施設</label>
         <select id="resetFacilitySelect" disabled><option value="">リセット可能な棚卸情報はありません</option></select>
         <button id="resetInventoryButton" class="button button--danger" type="button" disabled>棚卸情報をリセット</button>
@@ -138,9 +139,47 @@
         <div class="overall-summary-read"><span>読取済</span><strong id="overallReadCount">0</strong></div>
         <div class="overall-summary-unread"><span>未読取</span><strong id="overallUnreadCount">0</strong></div>
         <div class="overall-summary-complete"><span>完了部署</span><strong id="overallCompletedCount">0 / 0</strong></div>
+        <div class="overall-summary-approved"><span>部署確認済</span><strong id="overallApprovedCount">0 / 0</strong></div>
       </div>
       <p class="overall-help">部署を押すと、その部署の棚卸チェックへ移動します。</p>
       <div id="overallDepartmentList" class="overall-department-list"></div>
+    </div>
+  </section>
+
+  <section id="departmentApprovalDialog" class="department-approval-overlay" role="dialog" aria-modal="true" aria-labelledby="departmentApprovalHeading" hidden>
+    <div class="department-approval-dialog">
+      <header class="department-approval-dialog-header">
+        <div><p class="eyebrow">病院部署スタッフによる業務確認</p><h2 id="departmentApprovalHeading">部署確認</h2></div>
+        <button id="departmentApprovalCloseButton" class="overall-close-button" type="button" aria-label="部署確認を閉じる">閉じる</button>
+      </header>
+      <div class="department-approval-body">
+        <section class="department-approval-summary" aria-label="部署確認の基本情報">
+          <h3 id="departmentApprovalDepartment">施設・部署</h3>
+          <p id="departmentApprovalEndDate">対象終了日：―</p>
+          <div class="count-grid">
+            <div class="count-card"><span>対象総数</span><strong id="departmentApprovalTargetCount">0</strong></div>
+            <div class="count-card count-card--read"><span>読取済</span><strong id="departmentApprovalReadCount">0</strong></div>
+            <div class="count-card count-card--unread"><span>未確認</span><strong id="departmentApprovalUnreadCount">0</strong></div>
+          </div>
+        </section>
+        <p id="departmentApprovalExistingMessage" class="department-approval-existing" hidden></p>
+        <p id="departmentApprovalUpdateWarning" class="department-approval-warning" hidden>部署確認後に棚卸対象データが更新されています。保存済みの承認記録は変更されていません。</p>
+        <section>
+          <h3>承認対象の未確認SPDラベル</h3>
+          <div id="departmentApprovalLabelList" class="department-approval-label-list"></div>
+        </section>
+        <section id="departmentApprovalInputArea" class="department-approval-input-area">
+          <label for="departmentApproverName">確認者氏名<span class="required-mark">必須</span></label>
+          <input id="departmentApproverName" type="text" autocomplete="name" maxlength="100" placeholder="部署スタッフ本人の氏名">
+          <label class="department-approval-check"><input id="departmentApprovalCheck" type="checkbox"><span id="departmentApprovalStatement">上記の未確認SPDラベルについて、所在状況を確認しました。</span></label>
+          <p id="departmentApprovalMessage" class="field-error" role="alert"></p>
+          <button id="executeDepartmentApprovalButton" class="button department-approval-execute" type="button">確認承認</button>
+        </section>
+        <div id="departmentApprovalRecordActions" class="department-approval-record-actions" hidden>
+          <button id="departmentApprovalPdfButton" class="button button--secondary" type="button">承認記録PDFを表示</button>
+          <button id="cancelDepartmentApprovalButton" class="button button--danger-light" type="button">部署確認を取消</button>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -157,7 +196,7 @@
 
   <script src="vendor/pdf-lib.min.js"></script>
   <script src="vendor/fontkit.umd.min.js"></script>
-  <script src="pdf-report.js?v=20260827-16"></script>
-  <script src="app.js?v=20260827-16"></script>
+  <script src="pdf-report.js?v=20260828-17"></script>
+  <script src="app.js?v=20260828-17"></script>
 </body>
 </html>
