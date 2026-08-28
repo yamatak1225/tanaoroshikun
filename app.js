@@ -1740,7 +1740,7 @@ function createDepartmentApprovalPdfData(approval) {
     facilityName: approval.facilityName || "",
     departmentName: approval.departmentName || "",
     endDate: formatDateForDisplay(approval.targetEndDate),
-    confirmedBy: approval.confirmedBy || "",
+    confirmedBy: approval.confirmedBy ? `${approval.confirmedBy} 様` : "",
     confirmedAt: formatApprovalDateTime(approval.confirmedAt),
     countSummary: `対象 ${approval.targetCount || 0}件　読取済 ${approval.readCount || 0}件　未読取 ${approval.unreadCount || 0}件`,
     fileDate: todayInputValue(new Date(approval.confirmedAt)).replaceAll("-", ""),
