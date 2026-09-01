@@ -8,11 +8,11 @@
 - Bundled file: `pdf-lib.min.js`
 - License text: `pdf-lib-LICENSE.md`
 
-## pdf-fontkit 1.8.9
+## @pdf-lib/fontkit 1.1.1
 
-- Purpose: embedding and subsetting the Japanese TrueType font in PDF files
-- Source: https://github.com/znacloud/pdf-fontkit
-- License: MIT (declared in the package metadata)
+- Purpose: embedding the Japanese TrueType font in PDF files
+- Source: https://github.com/Hopding/fontkit
+- License: MIT
 - Bundled file: `fontkit.umd.min.js`
 
 MIT License
@@ -42,7 +42,8 @@ SOFTWARE.
 - Purpose: embedded Japanese font for generated PDF files
 - Source: https://github.com/notofonts/noto-cjk
 - License: SIL Open Font License 1.1
-- Bundled file: `NotoSansCJKjp-Regular.ttf`
+- Bundled files: `NotoSansCJKjp-Regular.ttf`, `NotoSansCJKjp-PdfCommon.ttf`, `pdf-font-data.js`
 - Build note: this static Regular instance was generated locally from the official `NotoSansCJKjp-VF.ttf` source at weight 400 using FontTools 4.59.0.
 - License text: `NotoSansJP-LICENSE.txt`
-- PDF files embed a tested subset containing the glyphs used in each generated report.
+- `NotoSansCJKjp-PdfCommon.ttf` is a build-time subset containing CP932 characters and report fixed text. It retains a normal cmap and is embedded without runtime subsetting for iOS PDF compatibility.
+- `pdf-font-data.js` contains the same pre-subset font as Base64 so normal PDF generation does not require an additional runtime fetch. The full font is retained as a fallback for characters outside the pre-subset.

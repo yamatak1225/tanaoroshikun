@@ -1901,6 +1901,14 @@ function createPdfBlob(pdfBytes, BlobRef = Blob) {
   return pdfBlob;
 }
 
+function getPdfGenerationOptions(documentRef = document) {
+  const appBaseUrl = new URL("./", documentRef.baseURI);
+  return {
+    fontUrl: new URL("vendor/NotoSansCJKjp-PdfCommon.ttf", appBaseUrl).href,
+    fallbackFontUrl: new URL("vendor/NotoSansCJKjp-Regular.ttf", appBaseUrl).href
+  };
+}
+
 function displayPdfUrl(previewWindow, pdfUrl) {
   if (!previewWindow || previewWindow.closed) throw new Error("PDF表示用の画面が閉じられています。");
   if (!pdfUrl) throw new Error("PDF表示用URLがありません。");
@@ -1931,9 +1939,7 @@ async function generateAndOpenPdf(previewWindow = null) {
   elements.printPreviewButton.textContent = "PDF生成中…";
   elements.unreadActionMessage.textContent = "A4横向きPDFを端末内で生成しています。";
   try {
-    const result = await globalThis.InventoryPdf.generateInventoryPdf(report, {
-      fontUrl: new URL("./vendor/NotoSansCJKjp-Regular.ttf", document.baseURI).href
-    });
+    const result = await globalThis.InventoryPdf.generateInventoryPdf(report, getPdfGenerationOptions());
     const pdfBlob = createPdfBlob(result.bytes);
     const pdfUrl = URL.createObjectURL(pdfBlob);
     if (!pdfUrl) throw new Error("PDF表示用URLを生成できません。");
@@ -1943,6 +1949,7 @@ async function generateAndOpenPdf(previewWindow = null) {
     displayPdfUrl(previewWindow, pdfUrl);
     return true;
   } catch (error) {
+    console.error("[棚卸くん PDF] 未確認ラベルリストPDFの生成または表示に失敗しました。", error);
     if (previewWindow && !previewWindow.closed) previewWindow.close();
     elements.unreadActionMessage.textContent = `PDFの生成または表示に失敗しました：${error.message}`;
     playAlertSound();
@@ -1970,9 +1977,7 @@ async function generateAndOpenDepartmentApprovalPdf(previewWindow = null, approv
   elements.departmentApprovalPdfButton.disabled = true;
   elements.departmentApprovalPdfButton.textContent = "PDF生成中…";
   try {
-    const result = await globalThis.InventoryPdf.generateInventoryPdf(report, {
-      fontUrl: new URL("./vendor/NotoSansCJKjp-Regular.ttf", document.baseURI).href
-    });
+    const result = await globalThis.InventoryPdf.generateInventoryPdf(report, getPdfGenerationOptions());
     const pdfBlob = createPdfBlob(result.bytes);
     const pdfUrl = URL.createObjectURL(pdfBlob);
     if (!pdfUrl) throw new Error("PDF表示用URLを生成できません。");
@@ -1981,6 +1986,7 @@ async function generateAndOpenDepartmentApprovalPdf(previewWindow = null, approv
     displayPdfUrl(previewWindow, pdfUrl);
     return true;
   } catch (error) {
+    console.error("[棚卸くん PDF] 部署確認記録PDFの生成または表示に失敗しました。", error);
     if (previewWindow && !previewWindow.closed) previewWindow.close();
     elements.departmentApprovalExistingMessage.textContent = `承認記録PDFの生成または表示に失敗しました：${error.message}`;
     playAlertSound();
@@ -2041,9 +2047,7 @@ async function generateAndShareOutputPdf(reportType) {
   setOutputPdfBusy(true, activeButton);
   elements.outputMessage.textContent = "PDFを作成しています…";
   try {
-    const result = await globalThis.InventoryPdf.generateInventoryPdf(report, {
-      fontUrl: new URL("./vendor/NotoSansCJKjp-Regular.ttf", document.baseURI).href
-    });
+    const result = await globalThis.InventoryPdf.generateInventoryPdf(report, getPdfGenerationOptions());
     const method = await shareOutputPdf(result);
     const sizeKilobytes = Math.max(1, Math.round(result.bytes.byteLength / 1024)).toLocaleString("ja-JP");
     elements.outputMessage.textContent = method === "shared"
@@ -2051,6 +2055,7 @@ async function generateAndShareOutputPdf(reportType) {
       : `${result.pageCount}ページ（${sizeKilobytes}KB）のPDFをダウンロードしました。`;
     return true;
   } catch (error) {
+    console.error("[棚卸くん PDF] データ出力タブからのPDF生成または共有に失敗しました。", error);
     if (error.name !== "AbortError") {
       elements.outputMessage.textContent = `PDFを出力できませんでした：${error.message}`;
       playAlertSound();
@@ -2275,6 +2280,6 @@ if (typeof module !== "undefined" && module.exports) {
     getTargetCounts, getDepartmentProgress, getOverallProgress, getOutputTargetLabels, getResetFacilities, getReissueTargetLabels, getOutputRecords, getOutputScopeDepartments, getOutputScopeFacilities, getOutputScopeDescriptor, getScopedCurrentTargetLabels, getDepartmentApprovalRecordsForScope, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
     isCompletionTransition, resetInventoryForFacility, migrateStoredStateKey, getPrintRowValues, createPdfReportData, createOutputUnreadPdfData, createDepartmentApprovalPdfData, createDepartmentApprovalBatchPdfData, todayInputValue, formatDateForDisplay, formatMasterDate, formatApprovalDateTime, applyMasterData, saveState, restoreState, createHistoryRecord,
     snapshotLabel, createDepartmentApprovalSnapshot, departmentApprovalContentSignature, currentDepartmentApprovalSignature, isDepartmentApprovalOutdated,
-    createOutputRecord, filterOutputRecords, buildOutputCsv, createPdfFile, shareOutputPdf, openPdfLoadingWindow, createPdfBlob, displayPdfUrl, removeLegacyPwaArtifacts
+    createOutputRecord, filterOutputRecords, buildOutputCsv, createPdfFile, shareOutputPdf, openPdfLoadingWindow, createPdfBlob, getPdfGenerationOptions, displayPdfUrl, removeLegacyPwaArtifacts
   };
 }

@@ -18,7 +18,8 @@
   const DEFAULT_HEADERS = ["No.", "施設名 / 部署名", "商品コード", "商品名", "規格", "製品番号", "ラベルキー", "ラベル日付", "対応"];
   const APPROVAL_COLUMN_RATIOS = [0.05, 0.12, 0.20, 0.16, 0.12, 0.13, 0.12, 0.10];
   const APPROVAL_HEADERS = ["No.", "商品コード", "商品名", "規格", "製品番号", "ラベルキー", "ラベル日付", "対応"];
-  let cachedFontBytesPromise = null;
+  const cachedFontBytesByUrl = new Map();
+  let cachedInlineFontBytes = null;
 
   function textValue(value) {
     return value === null || value === undefined ? "" : String(value);
@@ -216,21 +217,94 @@
     return normalized;
   }
 
-  async function loadFontBytes(options) {
-    if (options.fontBytes) return options.fontBytes;
-    if (!cachedFontBytesPromise) {
-      const fetchRef = options.fetchRef || root.fetch?.bind(root);
-      if (!fetchRef) throw new Error("日本語フォントを読み込む機能がありません。");
-      const fontUrl = options.fontUrl || "./vendor/NotoSansCJKjp-Regular.ttf";
-      cachedFontBytesPromise = fetchRef(fontUrl).then((response) => {
-        if (!response.ok) throw new Error(`日本語フォントを読み込めません（${response.status}）。`);
-        return response.arrayBuffer();
-      }).catch((error) => {
-        cachedFontBytesPromise = null;
+  function decodeBase64Font(base64) {
+    if (cachedInlineFontBytes) return cachedInlineFontBytes;
+    try {
+      const binary = root.atob
+        ? root.atob(base64)
+        : typeof Buffer !== "undefined"
+          ? Buffer.from(base64, "base64").toString("binary")
+          : "";
+      if (!binary) throw new Error("Base64を復号できません。");
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      cachedInlineFontBytes = bytes;
+      return bytes;
+    } catch (error) {
+      console.error("[棚卸くん PDF] 同梱日本語フォントの復号に失敗しました。", error);
+      throw new Error("PDF用日本語フォントを準備できませんでした。");
+    }
+  }
+
+  async function fetchFontBytes(url, label, options) {
+    const fetchRef = options.fetchRef || root.fetch?.bind(root);
+    if (!fetchRef) throw new Error(`${label}を読み込む機能がありません。`);
+    if (!cachedFontBytesByUrl.has(url)) {
+      const request = (async () => {
+        console.info(`[棚卸くん PDF] ${label}の取得を開始します。`, { url });
+        let response;
+        try {
+          response = await fetchRef(url, { cache: "force-cache" });
+        } catch (error) {
+          console.error(`[棚卸くん PDF] ${label}の取得に失敗しました。`, { url, error });
+          throw new Error(`${label}を読み込めませんでした（通信失敗 / ${url}）。`);
+        }
+        const contentType = response.headers?.get?.("content-type") || "";
+        console.info(`[棚卸くん PDF] ${label}のHTTP応答を受信しました。`, {
+          url, status: response.status, ok: response.ok, contentType
+        });
+        if (!response.ok) throw new Error(`${label}を読み込めませんでした（HTTP ${response.status} / ${url}）。`);
+        if (/text\/html/i.test(contentType)) throw new Error(`${label}の代わりにHTMLが返されました（${url}）。`);
+        const bytes = await response.arrayBuffer();
+        if (!bytes?.byteLength) throw new Error(`${label}が0バイトです（${url}）。`);
+        console.info(`[棚卸くん PDF] ${label}の取得に成功しました。`, { url, bytes: bytes.byteLength, contentType });
+        return bytes;
+      })().catch((error) => {
+        cachedFontBytesByUrl.delete(url);
         throw error;
       });
+      cachedFontBytesByUrl.set(url, request);
     }
-    return cachedFontBytesPromise;
+    return cachedFontBytesByUrl.get(url);
+  }
+
+  async function loadPrimaryFontBytes(options) {
+    if (options.fontBytes) return options.fontBytes;
+    const inlineBase64 = options.inlineFontBase64 || root.InventoryPdfFontData?.base64;
+    if (inlineBase64) return decodeBase64Font(inlineBase64);
+    const fontUrl = options.fontUrl || "./vendor/NotoSansCJKjp-PdfCommon.ttf";
+    return fetchFontBytes(fontUrl, "PDF用日本語フォント", options);
+  }
+
+  function collectReportCodePoints(value, codePoints = new Set()) {
+    if (Array.isArray(value)) value.forEach((item) => collectReportCodePoints(item, codePoints));
+    else if (value && typeof value === "object") Object.values(value).forEach((item) => collectReportCodePoints(item, codePoints));
+    else if (value !== null && value !== undefined) {
+      for (const character of String(value)) codePoints.add(character.codePointAt(0));
+    }
+    return codePoints;
+  }
+
+  function findMissingCodePoints(fontkitRef, fontBytes, report) {
+    const parsedFont = fontkitRef.create(fontBytes instanceof Uint8Array ? fontBytes : new Uint8Array(fontBytes));
+    return [...collectReportCodePoints(report)].filter((codePoint) => !parsedFont.hasGlyphForCodePoint(codePoint));
+  }
+
+  async function chooseCompatibleFontBytes(fontkitRef, report, options) {
+    const primaryBytes = await loadPrimaryFontBytes(options);
+    const missing = findMissingCodePoints(fontkitRef, primaryBytes, report);
+    if (!missing.length) return primaryBytes;
+
+    console.warn("[棚卸くん PDF] 事前サブセット外の文字を検出したため完全フォントへ切り替えます。", {
+      codePoints: missing.map((codePoint) => `U+${codePoint.toString(16).toUpperCase()}`)
+    });
+    const fallbackBytes = options.fallbackFontBytes
+      || await fetchFontBytes(options.fallbackFontUrl || "./vendor/NotoSansCJKjp-Regular.ttf", "PDF用日本語完全フォント", options);
+    const fallbackMissing = findMissingCodePoints(fontkitRef, fallbackBytes, report);
+    if (fallbackMissing.length) {
+      throw new Error(`PDF用日本語フォントに含まれない文字があります（${fallbackMissing.map((codePoint) => `U+${codePoint.toString(16).toUpperCase()}`).join(", ")}）。`);
+    }
+    return fallbackBytes;
   }
 
   function validateReportLayout(report) {
@@ -276,11 +350,12 @@
     if (!fontkitRef) throw new Error("日本語フォント処理ライブラリを読み込めません。");
     const report = normalizeReport(inputReport || {});
     const sections = report.sections.length ? report.sections : [report];
-    const fontBytes = await loadFontBytes(options);
+    const fontBytes = await chooseCompatibleFontBytes(fontkitRef, report, options);
     const pdfDoc = await pdfLib.PDFDocument.create();
     pdfDoc.registerFontkit(fontkitRef);
-    // pdf-lib 1.17.1とfontkitの正式なsubsetオプションで、帳票内で使用する字形だけを埋め込む。
-    const font = await pdfDoc.embedFont(fontBytes, { subset: true });
+    // iOS標準PDFビューアとの互換性を優先し、通常のcmapを持つ事前サブセットTTFを完全埋込みする。
+    // pdf-fontkitによる動的CJKサブセットは使わない。
+    const font = await pdfDoc.embedFont(fontBytes, { subset: false });
     const fonts = { japanese: font, latin: await pdfDoc.embedFont(pdfLib.StandardFonts.Helvetica) };
     pdfDoc.setTitle(report.title);
     pdfDoc.setSubject(report.reportType === "departmentApproval" ? "棚卸くん 部署確認記録" : "棚卸くん 未確認ラベル帳票");
