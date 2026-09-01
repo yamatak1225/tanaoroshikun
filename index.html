@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>棚卸くん</title>
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
-  <link rel="stylesheet" href="style.css?v=20260828-17">
+  <link rel="stylesheet" href="style.css?v=20260831-18">
 </head>
 <body>
   <header class="app-header">
@@ -89,10 +89,17 @@
       <div class="section-heading-row"><div><p class="eyebrow">対象終了日までの有効ラベル全件</p><h2 id="historyHeading">データ出力</h2></div><strong id="outputCount" class="history-count">0件</strong></div>
       <section class="card history-filter-card">
         <div class="output-end-date"><span>終了日</span><strong id="outputEndDate">―</strong></div>
-        <div class="history-select-row"><select id="outputFacility" aria-label="施設"><option value="">すべての施設</option></select><select id="outputDepartment" aria-label="部署"><option value="">すべての部署</option></select></div>
+        <div class="output-scope-row">
+          <label><span>施設</span><select id="outputFacility" aria-label="施設"><option value="">すべて</option></select></label>
+          <label><span>部署</span><select id="outputDepartment" aria-label="部署" disabled><option value="">すべて</option></select></label>
+        </div>
         <div class="history-select-row"><select id="outputReadStatus" aria-label="読取済区分"><option value="">すべての状態</option><option value="読取済">読取済</option><option value="未読取">未読取</option></select><input id="outputSearch" type="search" placeholder="商品名・規格・ラベルキー"></div>
       </section>
-      <div class="history-actions"><button id="exportDataButton" class="button button--secondary" type="button">対象ラベル全件をCSV出力</button></div>
+      <div class="history-actions">
+        <button id="exportDataButton" class="button button--secondary" type="button">選択条件でCSV出力</button>
+        <button id="exportUnreadPdfButton" class="button button--secondary" type="button">未確認ラベルリストPDF</button>
+        <button id="exportApprovalPdfButton" class="button button--secondary" type="button">部署確認記録PDF</button>
+      </div>
       <p id="outputMessage" class="inline-message" aria-live="polite"></p>
       <div id="outputList" class="history-list"></div>
     </section>
@@ -196,7 +203,7 @@
 
   <script src="vendor/pdf-lib.min.js"></script>
   <script src="vendor/fontkit.umd.min.js"></script>
-  <script src="pdf-report.js?v=20260828-17"></script>
-  <script src="app.js?v=20260828-17"></script>
+  <script src="pdf-report.js?v=20260831-18"></script>
+  <script src="app.js?v=20260831-18"></script>
 </body>
 </html>

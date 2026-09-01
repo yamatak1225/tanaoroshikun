@@ -8,10 +8,10 @@
 - Bundled file: `pdf-lib.min.js`
 - License text: `pdf-lib-LICENSE.md`
 
-## @pdf-lib/fontkit 1.1.1
+## pdf-fontkit 1.8.9
 
-- Purpose: embedding the Japanese OpenType font in PDF files
-- Source: https://github.com/Hopding/fontkit
+- Purpose: embedding and subsetting the Japanese TrueType font in PDF files
+- Source: https://github.com/znacloud/pdf-fontkit
 - License: MIT (declared in the package metadata)
 - Bundled file: `fontkit.umd.min.js`
 
@@ -45,4 +45,4 @@ SOFTWARE.
 - Bundled file: `NotoSansCJKjp-Regular.ttf`
 - Build note: this static Regular instance was generated locally from the official `NotoSansCJKjp-VF.ttf` source at weight 400 using FontTools 4.59.0.
 - License text: `NotoSansJP-LICENSE.txt`
-- PDF files embed the complete static TrueType font to prevent missing Japanese glyphs in PDF viewers.
+- PDF files embed a tested subset containing the glyphs used in each generated report.

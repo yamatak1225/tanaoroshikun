@@ -37,6 +37,7 @@ let historyDbPromise = null;
 let activePdfUrl = "";
 let pendingResetFacility = null;
 let activeDepartmentApproval = null;
+let outputPdfBusy = false;
 
 function normalizeHeader(value) { return String(value ?? "").replace(/^\uFEFF/, "").trim(); }
 function normalizeValue(value) { return String(value ?? "").trim(); }
@@ -774,11 +775,52 @@ function getOutputRecords() {
   return getOutputTargetLabels().map(createOutputRecord);
 }
 
+function getOutputScopeDepartments() {
+  const departments = new Map();
+  getEligibleDepartments().forEach((department) => departments.set(departmentKey(department), department));
+  state.departmentApprovals.forEach((approval) => {
+    const department = {
+      facilityCode: normalizeValue(approval.facilityCode),
+      facilityName: normalizeValue(approval.facilityName) || normalizeValue(approval.facilityCode),
+      departmentCode: normalizeValue(approval.departmentCode),
+      departmentName: normalizeValue(approval.departmentName) || normalizeValue(approval.departmentCode)
+    };
+    const key = departmentKey(department);
+    if (key && !departments.has(key)) departments.set(key, department);
+  });
+  return [...departments.values()].sort((left, right) => `${left.facilityName}\u0000${left.departmentName}`.localeCompare(`${right.facilityName}\u0000${right.departmentName}`, "ja"));
+}
+
+function getOutputScopeFacilities() {
+  const facilities = new Map();
+  getOutputScopeDepartments().forEach((department) => {
+    if (!facilities.has(department.facilityCode)) facilities.set(department.facilityCode, { facilityCode: department.facilityCode, facilityName: department.facilityName });
+  });
+  return [...facilities.values()].sort((left, right) => left.facilityName.localeCompare(right.facilityName, "ja"));
+}
+
+function getOutputScopeDescriptor(filters = {}) {
+  const facilityCode = normalizeValue(filters.facilityCode || filters.facility);
+  const departmentCode = facilityCode ? normalizeValue(filters.departmentCode || filters.department) : "";
+  const facility = getOutputScopeFacilities().find((item) => item.facilityCode === facilityCode) || null;
+  const department = facilityCode && departmentCode
+    ? getOutputScopeDepartments().find((item) => item.facilityCode === facilityCode && item.departmentCode === departmentCode) || null
+    : null;
+  if (!facility) return { facilityCode: "", facilityName: "全施設", departmentCode: "", departmentName: "全部署", fileScopeParts: ["全施設"] };
+  if (!department) return { facilityCode, facilityName: facility.facilityName, departmentCode: "", departmentName: "全部署", fileScopeParts: [facility.facilityName, "全部署"] };
+  return { facilityCode, facilityName: facility.facilityName, departmentCode, departmentName: department.departmentName, fileScopeParts: [facility.facilityName, department.departmentName] };
+}
+
 function filterOutputRecords(records, filters = {}) {
   const search = normalizeValue(filters.search).toLowerCase();
+  const facilityCode = normalizeValue(filters.facilityCode);
+  const departmentCode = normalizeValue(filters.departmentCode);
   return records.filter((record) => {
-    if (filters.facility && record.facilityName !== filters.facility) return false;
-    if (filters.department && record.departmentName !== filters.department) return false;
+    if (facilityCode && record.facilityCode !== facilityCode) return false;
+    if (departmentCode && record.departmentCode !== departmentCode) return false;
+    // 旧呼出しとの互換性を維持しつつ、画面からの判定はコードを使用する。
+    if (!facilityCode && filters.facility && record.facilityName !== filters.facility) return false;
+    if (!departmentCode && filters.department && record.departmentName !== filters.department) return false;
     if (filters.readStatus && record.readStatus !== filters.readStatus) return false;
     return !search || [record.productCode, record.manufacturerName, record.productNumber, record.productName, record.specification, record.labelKey].join(" ").toLowerCase().includes(search);
   });
@@ -820,6 +862,24 @@ async function shareOutputCsv(records, env = {}) {
   const file = createOutputCsvFile(records);
   if (navigatorRef.canShare?.({ files: [file] }) && navigatorRef.share) {
     await navigatorRef.share({ title: "棚卸くん 棚卸データ", text: "棚卸くんの対象ラベル全件CSVです。", files: [file] });
+    return "shared";
+  }
+  downloadFile(file, documentRef);
+  return "downloaded";
+}
+
+function createPdfFile(result, FileRef = File) {
+  if (!result?.bytes?.byteLength || !result.fileName) throw new Error("PDFファイルを作成できません。");
+  return new FileRef([result.bytes], result.fileName, { type: "application/pdf" });
+}
+
+async function shareOutputPdf(result, env = {}) {
+  const navigatorRef = env.navigatorRef || navigator;
+  const documentRef = env.documentRef || document;
+  const FileRef = env.FileRef || File;
+  const file = createPdfFile(result, FileRef);
+  if (navigatorRef.canShare?.({ files: [file] }) && navigatorRef.share) {
+    await navigatorRef.share({ title: result.fileName.replace(/\.pdf$/i, ""), text: "棚卸くんで作成したPDFです。", files: [file] });
     return "shared";
   }
   downloadFile(file, documentRef);
@@ -1051,7 +1111,7 @@ function cacheElements() {
     "targetEndDate", "periodError", "departmentSelect", "overallStatusButton", "currentFacility", "currentDepartment", "currentDepartmentCode", "targetCount", "readCount", "unreadCount",
     "resultPanel", "modeStatus", "resultTitle", "resultMessage", "resultDetails", "scannerBufferStatus", "manualScanInput", "manualScanButton",
     "printPreviewButton", "departmentApprovalButton", "departmentApprovalStatus", "reissueExtractButton", "unreadPeriodLabel", "unreadDepartmentLabel", "unreadCountGrid", "unreadTargetCount", "unreadReadCount", "unreadRemainingCount", "unreadActionMessage", "unreadList",
-    "outputEndDate", "outputFacility", "outputDepartment", "outputReadStatus", "outputSearch", "outputCount", "outputList", "exportDataButton", "outputMessage",
+    "outputEndDate", "outputFacility", "outputDepartment", "outputReadStatus", "outputSearch", "outputCount", "outputList", "exportDataButton", "exportUnreadPdfButton", "exportApprovalPdfButton", "outputMessage",
     "overallStatusDialog", "overallStatusCloseButton", "overallEndDate", "overallTargetCount", "overallReadCount", "overallUnreadCount", "overallCompletedCount", "overallApprovedCount", "overallDepartmentList",
     "departmentApprovalDialog", "departmentApprovalCloseButton", "departmentApprovalDepartment", "departmentApprovalEndDate", "departmentApprovalTargetCount", "departmentApprovalReadCount", "departmentApprovalUnreadCount",
     "departmentApprovalExistingMessage", "departmentApprovalUpdateWarning", "departmentApprovalLabelList", "departmentApprovalInputArea", "departmentApproverName", "departmentApprovalCheck", "departmentApprovalStatement", "departmentApprovalMessage",
@@ -1583,28 +1643,38 @@ function createEmptyState(message) {
 
 function getOutputFiltersFromUi() {
   return {
-    facility: elements.outputFacility.value,
-    department: elements.outputDepartment.value,
+    facilityCode: elements.outputFacility.value,
+    departmentCode: elements.outputDepartment.value,
     readStatus: elements.outputReadStatus.value,
     search: elements.outputSearch.value
   };
 }
 
-function updateOutputFilterOptions(records) {
-  const setOptions = (select, values, label) => {
-    const current = select.value;
-    select.replaceChildren(new Option(label, ""), ...[...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map((value) => new Option(value, value)));
-    select.value = current;
-  };
-  setOptions(elements.outputFacility, records.map((record) => record.facilityName), "すべての施設");
-  setOptions(elements.outputDepartment, records.map((record) => record.departmentName), "すべての部署");
+function updateOutputFilterOptions() {
+  const selectedFacilityCode = elements.outputFacility.value;
+  const selectedDepartmentCode = elements.outputDepartment.value;
+  const facilities = getOutputScopeFacilities();
+  elements.outputFacility.replaceChildren(
+    new Option("すべて", ""),
+    ...facilities.map((facility) => new Option(facility.facilityName, facility.facilityCode))
+  );
+  elements.outputFacility.value = facilities.some((facility) => facility.facilityCode === selectedFacilityCode) ? selectedFacilityCode : "";
+
+  const facilityCode = elements.outputFacility.value;
+  const departments = facilityCode ? getOutputScopeDepartments().filter((department) => department.facilityCode === facilityCode) : [];
+  elements.outputDepartment.replaceChildren(
+    new Option("すべて", ""),
+    ...departments.map((department) => new Option(department.departmentName, department.departmentCode))
+  );
+  elements.outputDepartment.value = departments.some((department) => department.departmentCode === selectedDepartmentCode) ? selectedDepartmentCode : "";
+  elements.outputDepartment.disabled = !facilityCode;
 }
 
 function renderOutputData() {
   if (!elements.outputList) return;
   elements.outputEndDate.textContent = formatDateForDisplay(state.targetEndDate);
   const allRecords = getOutputRecords();
-  updateOutputFilterOptions(allRecords);
+  updateOutputFilterOptions();
   const records = filterOutputRecords(allRecords, getOutputFiltersFromUi());
   elements.outputCount.textContent = `${records.length}件`;
   elements.outputList.replaceChildren();
@@ -1732,6 +1802,36 @@ function createPdfReportData(now = new Date()) {
   };
 }
 
+function getScopedCurrentTargetLabels(filters = {}) {
+  const scope = getOutputScopeDescriptor(filters);
+  return getUniqueLabelRows(getOutputTargetLabels()).filter((row) => {
+    if (scope.facilityCode && row["施設コード"] !== scope.facilityCode) return false;
+    if (scope.departmentCode && row["部署コード"] !== scope.departmentCode) return false;
+    return true;
+  }).sort((left, right) => `${left["施設名称"]}\u0000${left["部署名称"]}\u0000${left["ラベルキー"]}`.localeCompare(`${right["施設名称"]}\u0000${right["部署名称"]}\u0000${right["ラベルキー"]}`, "ja"));
+}
+
+function createOutputUnreadPdfData(filters = {}, now = new Date()) {
+  const scope = getOutputScopeDescriptor(filters);
+  const targets = getScopedCurrentTargetLabels(scope);
+  const unread = targets.filter((row) => !isRowRead(row));
+  const readCount = targets.length - unread.length;
+  return {
+    title: "SPD棚卸　未確認ラベルリスト",
+    facilityName: scope.facilityName,
+    departmentName: scope.departmentName,
+    endDate: `${formatDateForDisplay(state.targetEndDate)} まで`,
+    printedAt: formatLocalDateTime(now),
+    countSummary: `対象 ${targets.length}件　読取済 ${readCount}件　未読取 ${unread.length}件`,
+    fileDate: todayInputValue(now).replaceAll("-", ""),
+    fileScopeParts: scope.fileScopeParts,
+    headers: PRINT_COLUMN_HEADERS,
+    rows: unread.map(getPrintRowValues),
+    targetCount: targets.length,
+    unreadCount: unread.length
+  };
+}
+
 function createDepartmentApprovalPdfData(approval) {
   if (!approval?.approvalKey) return null;
   return {
@@ -1752,6 +1852,32 @@ function createDepartmentApprovalPdfData(approval) {
       String(index + 1), label.productCode || "", label.productName || "", label.specification || "", label.productNumber || "",
       label.labelKey || "", label.labelDate || "", label.reissue ? "ラベル再発行" : ""
     ])
+  };
+}
+
+function getDepartmentApprovalRecordsForScope(filters = {}) {
+  const scope = getOutputScopeDescriptor(filters);
+  return [...state.departmentApprovals.values()].filter((approval) => {
+    if (scope.facilityCode && approval.facilityCode !== scope.facilityCode) return false;
+    if (scope.departmentCode && approval.departmentCode !== scope.departmentCode) return false;
+    return true;
+  }).sort((left, right) => `${left.facilityName}\u0000${left.departmentName}\u0000${left.targetEndDate}\u0000${left.confirmedAt}`.localeCompare(`${right.facilityName}\u0000${right.departmentName}\u0000${right.targetEndDate}\u0000${right.confirmedAt}`, "ja"));
+}
+
+function createDepartmentApprovalBatchPdfData(approvals, filters = {}, now = new Date()) {
+  const records = (approvals || []).filter((approval) => approval?.approvalKey);
+  if (!records.length) return null;
+  const scope = getOutputScopeDescriptor(filters);
+  return {
+    reportType: "departmentApproval",
+    title: "SPD棚卸　部署確認記録",
+    facilityName: scope.facilityName,
+    departmentName: scope.departmentName,
+    fileDate: todayInputValue(now).replaceAll("-", ""),
+    fileScopeParts: scope.fileScopeParts,
+    headers: APPROVAL_PDF_HEADERS,
+    columnRatios: APPROVAL_PDF_COLUMN_RATIOS,
+    sections: records.map(createDepartmentApprovalPdfData)
   };
 }
 
@@ -1862,6 +1988,76 @@ async function generateAndOpenDepartmentApprovalPdf(previewWindow = null, approv
   } finally {
     elements.departmentApprovalPdfButton.textContent = originalLabel;
     elements.departmentApprovalPdfButton.disabled = false;
+  }
+}
+
+function setOutputPdfBusy(busy, activeButton = null) {
+  outputPdfBusy = busy;
+  [elements.exportDataButton, elements.exportUnreadPdfButton, elements.exportApprovalPdfButton].forEach((button) => {
+    if (button) button.disabled = busy;
+  });
+  if (busy && activeButton) {
+    activeButton.dataset.originalLabel = activeButton.textContent;
+    activeButton.textContent = "PDFを作成しています…";
+  } else {
+    [elements.exportUnreadPdfButton, elements.exportApprovalPdfButton].forEach((button) => {
+      if (button?.dataset.originalLabel) {
+        button.textContent = button.dataset.originalLabel;
+        delete button.dataset.originalLabel;
+      }
+    });
+  }
+}
+
+async function generateAndShareOutputPdf(reportType) {
+  if (outputPdfBusy) return false;
+  const filters = getOutputFiltersFromUi();
+  const activeButton = reportType === "departmentApproval" ? elements.exportApprovalPdfButton : elements.exportUnreadPdfButton;
+  let report;
+  if (reportType === "departmentApproval") {
+    const approvals = getDepartmentApprovalRecordsForScope(filters);
+    if (!approvals.length) {
+      elements.outputMessage.textContent = "対象となる部署確認記録がありません。";
+      return false;
+    }
+    report = createDepartmentApprovalBatchPdfData(approvals, filters);
+  } else {
+    const validation = validateTargetEndDate();
+    if (!validation.ok) {
+      elements.outputMessage.textContent = validation.message;
+      return false;
+    }
+    report = createOutputUnreadPdfData(filters);
+    if (!report.unreadCount) {
+      elements.outputMessage.textContent = "対象となる未確認ラベルはありません。";
+      return false;
+    }
+  }
+  if (!globalThis.InventoryPdf?.generateInventoryPdf) {
+    elements.outputMessage.textContent = "PDF生成機能を読み込めません。画面を再読み込みしてください。";
+    return false;
+  }
+
+  setOutputPdfBusy(true, activeButton);
+  elements.outputMessage.textContent = "PDFを作成しています…";
+  try {
+    const result = await globalThis.InventoryPdf.generateInventoryPdf(report, {
+      fontUrl: new URL("./vendor/NotoSansCJKjp-Regular.ttf", document.baseURI).href
+    });
+    const method = await shareOutputPdf(result);
+    const sizeKilobytes = Math.max(1, Math.round(result.bytes.byteLength / 1024)).toLocaleString("ja-JP");
+    elements.outputMessage.textContent = method === "shared"
+      ? `${result.pageCount}ページ（${sizeKilobytes}KB）のPDFを共有画面へ渡しました。`
+      : `${result.pageCount}ページ（${sizeKilobytes}KB）のPDFをダウンロードしました。`;
+    return true;
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      elements.outputMessage.textContent = `PDFを出力できませんでした：${error.message}`;
+      playAlertSound();
+    }
+    return false;
+  } finally {
+    setOutputPdfBusy(false);
   }
 }
 
@@ -2014,18 +2210,24 @@ function bindEvents() {
     renderOverallStatus();
   });
 
-  [elements.outputFacility, elements.outputDepartment, elements.outputReadStatus]
-    .forEach((input) => input.addEventListener("change", renderOutputData));
+  elements.outputFacility.addEventListener("change", () => {
+    elements.outputDepartment.value = "";
+    renderOutputData();
+  });
+  [elements.outputDepartment, elements.outputReadStatus].forEach((input) => input.addEventListener("change", renderOutputData));
   elements.outputSearch.addEventListener("input", renderOutputData);
   elements.exportDataButton.addEventListener("click", async () => {
     try {
-      const records = getOutputRecords();
+      const filters = getOutputFiltersFromUi();
+      const records = filterOutputRecords(getOutputRecords(), { facilityCode: filters.facilityCode, departmentCode: filters.departmentCode });
       const method = await shareOutputCsv(records);
       elements.outputMessage.textContent = method === "shared" ? `${records.length}件の共有画面を開きました。` : `${records.length}件のCSVをダウンロードしました。`;
     } catch (error) {
       if (error.name !== "AbortError") elements.outputMessage.textContent = error.message;
     }
   });
+  elements.exportUnreadPdfButton.addEventListener("click", () => { void generateAndShareOutputPdf("unread"); });
+  elements.exportApprovalPdfButton.addEventListener("click", () => { void generateAndShareOutputPdf("departmentApproval"); });
 
   window.addEventListener("keydown", handleGlobalKeydown);
 }
@@ -2070,9 +2272,9 @@ if (typeof module !== "undefined" && module.exports) {
     REQUIRED_HEADERS, OPTIONAL_VALUE_HEADERS, PRINT_COLUMN_HEADERS, APPROVAL_PDF_HEADERS, APPROVAL_PDF_COLUMN_RATIOS, state, normalizeLabelKey, splitTsvRecords, isValidDateKey, parseTsv, buildLabelKey, normalizeQr,
     getExpectedCenterCode, departmentKey, departmentFromRow, facilityKey, facilityFromRow, inventoryStateKey, inventoryStateKeyForRow, parseInventoryStateKey, departmentApprovalKey, parseDepartmentApprovalKey, currentDepartmentApprovalKey, getDepartmentApproval, rebuildIndexes, findLabel, parseDateInput, validateTargetEndDate,
     isRowOnOrBeforeEndDate, matchesDepartment, getEligibleDepartments, getUniqueLabelRows, getCurrentTargetLabels, getUnreadLabels,
-    getTargetCounts, getDepartmentProgress, getOverallProgress, getOutputTargetLabels, getResetFacilities, getReissueTargetLabels, getOutputRecords, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
-    isCompletionTransition, resetInventoryForFacility, migrateStoredStateKey, getPrintRowValues, createPdfReportData, createDepartmentApprovalPdfData, todayInputValue, formatDateForDisplay, formatMasterDate, formatApprovalDateTime, applyMasterData, saveState, restoreState, createHistoryRecord,
+    getTargetCounts, getDepartmentProgress, getOverallProgress, getOutputTargetLabels, getResetFacilities, getReissueTargetLabels, getOutputRecords, getOutputScopeDepartments, getOutputScopeFacilities, getOutputScopeDescriptor, getScopedCurrentTargetLabels, getDepartmentApprovalRecordsForScope, validateSpdLabel, acceptSpdLabel, confirmUnreadLabel, toggleReissueLabel,
+    isCompletionTransition, resetInventoryForFacility, migrateStoredStateKey, getPrintRowValues, createPdfReportData, createOutputUnreadPdfData, createDepartmentApprovalPdfData, createDepartmentApprovalBatchPdfData, todayInputValue, formatDateForDisplay, formatMasterDate, formatApprovalDateTime, applyMasterData, saveState, restoreState, createHistoryRecord,
     snapshotLabel, createDepartmentApprovalSnapshot, departmentApprovalContentSignature, currentDepartmentApprovalSignature, isDepartmentApprovalOutdated,
-    createOutputRecord, filterOutputRecords, buildOutputCsv, openPdfLoadingWindow, createPdfBlob, displayPdfUrl, removeLegacyPwaArtifacts
+    createOutputRecord, filterOutputRecords, buildOutputCsv, createPdfFile, shareOutputPdf, openPdfLoadingWindow, createPdfBlob, displayPdfUrl, removeLegacyPwaArtifacts
   };
 }

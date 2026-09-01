@@ -35,7 +35,10 @@
   function buildPdfFilename(report) {
     const dateKey = textValue(report.fileDate).replace(/\D/g, "").slice(0, 8) || "日付未設定";
     const reportName = report.reportType === "departmentApproval" ? "部署確認記録" : "未確認ラベルリスト";
-    return `SPD棚卸_${reportName}_${sanitizeFilenamePart(report.facilityName)}_${sanitizeFilenamePart(report.departmentName)}_${dateKey}.pdf`;
+    const scopeParts = Array.isArray(report.fileScopeParts) && report.fileScopeParts.length
+      ? report.fileScopeParts
+      : [report.facilityName, report.departmentName];
+    return `SPD棚卸_${reportName}_${scopeParts.map(sanitizeFilenamePart).join("_")}_${dateKey}.pdf`;
   }
 
   function wrapText(text, font, size, maxWidth) {
@@ -191,7 +194,7 @@
   }
 
   function normalizeReport(report) {
-    return {
+    const normalized = {
       title: textValue(report.title) || "SPD棚卸　未確認ラベルリスト",
       facilityName: textValue(report.facilityName),
       departmentName: textValue(report.departmentName),
@@ -204,10 +207,13 @@
       tableTitle: textValue(report.tableTitle),
       emptyMessage: textValue(report.emptyMessage),
       fileDate: textValue(report.fileDate),
+      fileScopeParts: Array.isArray(report.fileScopeParts) ? report.fileScopeParts.map(textValue).filter(Boolean) : [],
       headers: (report.headers || DEFAULT_HEADERS).map(textValue),
       columnRatios: (report.columnRatios || COLUMN_RATIOS).map(Number),
       rows: (report.rows || []).map((row) => (report.headers || DEFAULT_HEADERS).map((_, index) => textValue(row?.[index])))
     };
+    normalized.sections = Array.isArray(report.sections) ? report.sections.map(normalizeReport) : [];
+    return normalized;
   }
 
   async function loadFontBytes(options) {
@@ -227,31 +233,20 @@
     return cachedFontBytesPromise;
   }
 
-  async function generateInventoryPdf(inputReport, options = {}) {
-    const pdfLib = options.pdfLib || root.PDFLib;
-    const fontkitRef = options.fontkit || root.fontkit;
-    if (!pdfLib?.PDFDocument || !pdfLib?.rgb) throw new Error("PDF生成ライブラリを読み込めません。");
-    if (!fontkitRef) throw new Error("日本語フォント処理ライブラリを読み込めません。");
-    const report = normalizeReport(inputReport || {});
-    if (!report.headers.length || report.headers.length !== report.columnRatios.length || Math.abs(report.columnRatios.reduce((sum, value) => sum + value, 0) - 1) > 0.001) throw new Error("PDF一覧の列数または列幅が正しくありません。");
-    const fontBytes = await loadFontBytes(options);
-    const pdfDoc = await pdfLib.PDFDocument.create();
-    pdfDoc.registerFontkit(fontkitRef);
-    // CJKフォントの部分埋込みは一部のPDF表示環境で字形が欠落するため、
-    // 日本語の確実な表示を優先して静的TrueTypeフォント全体を埋め込む。
-    const font = await pdfDoc.embedFont(fontBytes, { subset: false });
-    const fonts = { japanese: font, latin: await pdfDoc.embedFont(pdfLib.StandardFonts.Helvetica) };
-    pdfDoc.setTitle(report.title);
-    pdfDoc.setSubject(report.reportType === "departmentApproval" ? "棚卸くん 部署確認記録" : "棚卸くん 未確認ラベル帳票");
-    pdfDoc.setCreator("棚卸くん / pdf-lib 1.17.1");
-    pdfDoc.setProducer("棚卸くん");
+  function validateReportLayout(report) {
+    if (!report.headers.length || report.headers.length !== report.columnRatios.length || Math.abs(report.columnRatios.reduce((sum, value) => sum + value, 0) - 1) > 0.001) {
+      throw new Error("PDF一覧の列数または列幅が正しくありません。");
+    }
+  }
 
+  function drawReportSection(pdfDoc, report, fonts, pdfLib) {
+    validateReportLayout(report);
     const [pageWidth, pageHeight] = A4_LANDSCAPE;
     const layout = columnLayout(pageWidth, report.columnRatios);
     let page = pdfDoc.addPage(A4_LANDSCAPE);
-    let currentY = drawFirstPageHeader(page, font, report, pdfLib);
+    let currentY = drawFirstPageHeader(page, fonts.japanese, report, pdfLib);
     if (report.tableTitle) {
-      drawBoldText(page, report.tableTitle, { x: PAGE_MARGIN, y: currentY - 2, size: 11, font, color: pdfLib.rgb(0, 0, 0) });
+      drawBoldText(page, report.tableTitle, { x: PAGE_MARGIN, y: currentY - 2, size: 11, font: fonts.japanese, color: pdfLib.rgb(0, 0, 0) });
       currentY -= 20;
     }
     const headerHeight = drawTableRow(page, currentY, report.headers, fonts, layout, pdfLib, { header: true });
@@ -270,8 +265,29 @@
       currentY -= drawTableRow(page, currentY, row, fonts, layout, pdfLib);
     });
     if (!report.rows.length && report.emptyMessage) {
-      drawBoldText(page, report.emptyMessage, { x: PAGE_MARGIN, y: currentY - 22, size: 11, font, color: pdfLib.rgb(0, 0, 0) });
+      drawBoldText(page, report.emptyMessage, { x: PAGE_MARGIN, y: currentY - 22, size: 11, font: fonts.japanese, color: pdfLib.rgb(0, 0, 0) });
     }
+  }
+
+  async function generateInventoryPdf(inputReport, options = {}) {
+    const pdfLib = options.pdfLib || root.PDFLib;
+    const fontkitRef = options.fontkit || root.fontkit;
+    if (!pdfLib?.PDFDocument || !pdfLib?.rgb) throw new Error("PDF生成ライブラリを読み込めません。");
+    if (!fontkitRef) throw new Error("日本語フォント処理ライブラリを読み込めません。");
+    const report = normalizeReport(inputReport || {});
+    const sections = report.sections.length ? report.sections : [report];
+    const fontBytes = await loadFontBytes(options);
+    const pdfDoc = await pdfLib.PDFDocument.create();
+    pdfDoc.registerFontkit(fontkitRef);
+    // pdf-lib 1.17.1とfontkitの正式なsubsetオプションで、帳票内で使用する字形だけを埋め込む。
+    const font = await pdfDoc.embedFont(fontBytes, { subset: true });
+    const fonts = { japanese: font, latin: await pdfDoc.embedFont(pdfLib.StandardFonts.Helvetica) };
+    pdfDoc.setTitle(report.title);
+    pdfDoc.setSubject(report.reportType === "departmentApproval" ? "棚卸くん 部署確認記録" : "棚卸くん 未確認ラベル帳票");
+    pdfDoc.setCreator("棚卸くん / pdf-lib 1.17.1");
+    pdfDoc.setProducer("棚卸くん");
+
+    sections.forEach((section) => drawReportSection(pdfDoc, section, fonts, pdfLib));
 
     const bytes = await pdfDoc.save();
     return { bytes, fileName: buildPdfFilename(report), pageCount: pdfDoc.getPageCount() };
